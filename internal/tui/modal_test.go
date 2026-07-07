@@ -14,7 +14,7 @@ import (
 
 func TestHostFormToHostRequiresAddress(t *testing.T) {
 	f := newHostForm(false, model.Host{}, "")
-	if _, err := f.toHost(); err == nil {
+	if _, _, err := f.toHost(); err == nil {
 		t.Fatal("expected error for missing address")
 	}
 }
@@ -22,7 +22,7 @@ func TestHostFormToHostRequiresAddress(t *testing.T) {
 func TestHostFormToHostDefaultsPortTo22(t *testing.T) {
 	f := newHostForm(false, model.Host{}, "")
 	f.inputs[fieldAddress].SetValue("10.0.0.1")
-	h, err := f.toHost()
+	h, _, err := f.toHost()
 	if err != nil {
 		t.Fatalf("toHost: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestHostFormToHostRejectsInvalidPort(t *testing.T) {
 	f := newHostForm(false, model.Host{}, "")
 	f.inputs[fieldAddress].SetValue("10.0.0.1")
 	f.inputs[fieldPort].SetValue("not-a-number")
-	if _, err := f.toHost(); err == nil {
+	if _, _, err := f.toHost(); err == nil {
 		t.Fatal("expected error for invalid port")
 	}
 }
@@ -43,7 +43,7 @@ func TestHostFormToHostRejectsInvalidPort(t *testing.T) {
 func TestHostFormToHostLabelFallsBackToAddress(t *testing.T) {
 	f := newHostForm(false, model.Host{}, "")
 	f.inputs[fieldAddress].SetValue("10.0.0.1")
-	h, err := f.toHost()
+	h, _, err := f.toHost()
 	if err != nil {
 		t.Fatalf("toHost: %v", err)
 	}
@@ -52,16 +52,134 @@ func TestHostFormToHostLabelFallsBackToAddress(t *testing.T) {
 	}
 }
 
-func TestHostFormToHostKeyPathSetsKeyIdentity(t *testing.T) {
+func TestHostFormToHostKeyModeSetsKeyIdentity(t *testing.T) {
 	f := newHostForm(false, model.Host{}, "")
 	f.inputs[fieldAddress].SetValue("10.0.0.1")
-	f.inputs[fieldKeyPath].SetValue("~/.ssh/id_ed25519")
-	h, err := f.toHost()
+	f.authMode = authKey
+	f.inputs[fieldSecret].SetValue("~/.ssh/id_ed25519")
+	h, password, err := f.toHost()
 	if err != nil {
 		t.Fatalf("toHost: %v", err)
 	}
 	if h.Identity.Kind != model.IdentityKey || h.Identity.KeyPath != "~/.ssh/id_ed25519" {
 		t.Fatalf("expected key identity, got %+v", h.Identity)
+	}
+	if password != "" {
+		t.Fatalf("expected no password for key auth, got %q", password)
+	}
+}
+
+func TestHostFormToHostKeyModeRequiresKeyPath(t *testing.T) {
+	f := newHostForm(false, model.Host{}, "")
+	f.inputs[fieldAddress].SetValue("10.0.0.1")
+	f.authMode = authKey
+	if _, _, err := f.toHost(); err == nil {
+		t.Fatal("expected error for missing key path")
+	}
+}
+
+func TestHostFormToHostPasswordModeReturnsPassword(t *testing.T) {
+	f := newHostForm(false, model.Host{}, "")
+	f.inputs[fieldAddress].SetValue("10.0.0.1")
+	f.authMode = authPassword
+	f.inputs[fieldSecret].SetValue("hunter2")
+	h, password, err := f.toHost()
+	if err != nil {
+		t.Fatalf("toHost: %v", err)
+	}
+	if h.Identity.Kind != model.IdentityPassword {
+		t.Fatalf("expected password identity, got %+v", h.Identity)
+	}
+	if password != "hunter2" {
+		t.Fatalf("expected password 'hunter2', got %q", password)
+	}
+}
+
+func TestHostFormToHostPasswordModeRequiresPasswordOnAdd(t *testing.T) {
+	f := newHostForm(false, model.Host{}, "")
+	f.inputs[fieldAddress].SetValue("10.0.0.1")
+	f.authMode = authPassword
+	if _, _, err := f.toHost(); err == nil {
+		t.Fatal("expected error for missing password on a new host")
+	}
+}
+
+func TestHostFormToHostPasswordModeBlankOnEditKeepsExisting(t *testing.T) {
+	// Editing a host that already uses password auth: leaving the
+	// (always-blank) password field empty must not error, and must signal
+	// "keep existing" via an empty returned password rather than failing
+	// validation or wiping the stored secret.
+	existing := model.Host{ID: "h1", Address: "10.0.0.1", Identity: model.Identity{Kind: model.IdentityPassword}}
+	f := newHostForm(true, existing, "")
+	if f.authMode != authPassword || !f.originalAuthPassword {
+		t.Fatalf("expected form primed for password auth, got authMode=%v originalAuthPassword=%v", f.authMode, f.originalAuthPassword)
+	}
+	if f.inputs[fieldSecret].Value() != "" {
+		t.Fatal("expected the password field to never be prefilled with the real secret")
+	}
+
+	h, password, err := f.toHost()
+	if err != nil {
+		t.Fatalf("toHost: %v", err)
+	}
+	if h.Identity.Kind != model.IdentityPassword {
+		t.Fatalf("expected identity to remain password, got %+v", h.Identity)
+	}
+	if password != "" {
+		t.Fatalf("expected empty password (meaning 'keep existing'), got %q", password)
+	}
+}
+
+func TestHostFormAuthModeCyclesAndWraps(t *testing.T) {
+	f := newHostForm(false, model.Host{}, "")
+	if f.authMode != authAgent {
+		t.Fatalf("expected default authAgent, got %v", f.authMode)
+	}
+	f.CycleAuthMode(1)
+	if f.authMode != authKey {
+		t.Fatalf("expected authKey, got %v", f.authMode)
+	}
+	f.CycleAuthMode(1)
+	if f.authMode != authPassword {
+		t.Fatalf("expected authPassword, got %v", f.authMode)
+	}
+	f.CycleAuthMode(1)
+	if f.authMode != authAgent {
+		t.Fatalf("expected wrap back to authAgent, got %v", f.authMode)
+	}
+	f.CycleAuthMode(-1)
+	if f.authMode != authPassword {
+		t.Fatalf("expected wrap backward to authPassword, got %v", f.authMode)
+	}
+}
+
+func TestHostFormNextSkipsSecretFieldWhenAgent(t *testing.T) {
+	f := newHostForm(false, model.Host{}, "") // authAgent by default
+	f.focusIdx = int(fieldAuthMode)
+	f.Next()
+	if f.focusIdx != int(fieldLabel) {
+		t.Fatalf("expected Next() to skip fieldSecret and wrap to fieldLabel, got %d", f.focusIdx)
+	}
+}
+
+func TestHostFormNextVisitsSecretFieldWhenKey(t *testing.T) {
+	f := newHostForm(false, model.Host{}, "")
+	f.authMode = authKey
+	f.focusIdx = int(fieldAuthMode)
+	f.Next()
+	if f.focusIdx != int(fieldSecret) {
+		t.Fatalf("expected Next() to land on fieldSecret, got %d", f.focusIdx)
+	}
+}
+
+func TestNewHostFormPrefillsAuthModeFromExistingIdentity(t *testing.T) {
+	h := model.Host{Identity: model.Identity{Kind: model.IdentityKey, KeyPath: "/x"}}
+	f := newHostForm(true, h, "")
+	if f.authMode != authKey {
+		t.Fatalf("expected authKey, got %v", f.authMode)
+	}
+	if f.inputs[fieldSecret].Value() != "/x" {
+		t.Fatalf("expected key path prefilled, got %q", f.inputs[fieldSecret].Value())
 	}
 }
 
@@ -92,9 +210,9 @@ func TestHostFormNextPrevCyclesFocus(t *testing.T) {
 	if f.focusIdx != int(fieldLabel) {
 		t.Fatalf("expected focus back on label after Prev, got %d", f.focusIdx)
 	}
-	f.Prev() // wraps to last field
-	if f.focusIdx != int(fieldCount)-1 {
-		t.Fatalf("expected focus wrapped to last field, got %d", f.focusIdx)
+	f.Prev() // wraps to the last field reachable in agent mode (fieldSecret is skipped)
+	if f.focusIdx != int(fieldAuthMode) {
+		t.Fatalf("expected focus wrapped to fieldAuthMode, got %d", f.focusIdx)
 	}
 }
 

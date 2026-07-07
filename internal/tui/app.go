@@ -13,8 +13,10 @@ import (
 	"github.com/danieluremix/minissh/internal/connect"
 	"github.com/danieluremix/minissh/internal/importer"
 	"github.com/danieluremix/minissh/internal/importflow"
+	"github.com/danieluremix/minissh/internal/keychain"
 	"github.com/danieluremix/minissh/internal/model"
 	"github.com/danieluremix/minissh/internal/sources"
+	"github.com/danieluremix/minissh/internal/sshsession"
 	"github.com/danieluremix/minissh/internal/store"
 )
 
@@ -54,12 +56,25 @@ type appModel struct {
 	width, height             int
 	groupsWidth, detailsWidth int
 	bodyHeight                int
+	// hostsWidth/hostsContentHeight are the exact content dimensions of
+	// the HOSTS panel's interior (excluding its own "HOSTS (N)"/"SESSION"
+	// header line and border) — reused both for the host table's SetSize
+	// and for sizing an embedded SSH session's pty so it fills the same
+	// space.
+	hostsWidth, hostsContentHeight int
 
 	allHosts  []model.Host
 	allGroups []model.Group
 	groups    groupsPanel
 	hosts     hostsTable
 	statuses  map[string]bool
+
+	// activeSession is non-nil while an SSH session is embedded and
+	// rendering inline in the HOSTS panel — while set, all input is
+	// forwarded to it instead of normal panel navigation (the same
+	// full-input-capture shape overlay/searching already use).
+	activeSession     *sshsession.Session
+	activeSessionHost model.Host
 
 	searching   bool
 	searchQuery string
@@ -129,6 +144,17 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshFromStore(s)
 		}
 		return m, nil
+	case sessionEndedMsg:
+		return m.endSession()
+	case sessionRedrawMsg:
+		if m.activeSession == nil {
+			return m, nil // session already ended; drop the stale tick rather than reschedule forever
+		}
+		return m, sessionRedrawTick()
+	}
+
+	if m.activeSession != nil {
+		return m.updateActiveSession(msg)
 	}
 
 	if m.overlay != overlayNone {
@@ -164,9 +190,16 @@ func (m *appModel) applySizes() {
 	if bodyH < 5 {
 		bodyH = 5
 	}
+	contentH := bodyH - 2 // minus the panel's own "HOSTS (N)"/table-header line
+
 	m.groupsWidth, m.detailsWidth, m.bodyHeight = groupsW, detailsW, bodyH
-	m.hosts.SetSize(hostsW, bodyH-2)
+	m.hostsWidth, m.hostsContentHeight = hostsW, contentH
+	m.hosts.SetSize(hostsW, contentH)
 	m.sourceList.SetSize(m.width, m.height)
+
+	if m.activeSession != nil {
+		_ = m.activeSession.Resize(hostsW, contentH)
+	}
 }
 
 func (m appModel) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -292,6 +325,14 @@ func (m appModel) updateHostsFocus(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch km.String() {
 		case "enter":
 			if h, ok := m.hosts.Selected(); ok {
+				return m.startEmbeddedSession(h)
+			}
+			return m, nil
+		case "E":
+			// Full-screen fallback (the original tea.ExecProcess-based
+			// connect): a safety net if the embedded session ever fails
+			// to start or renders a particular remote program wrong.
+			if h, ok := m.hosts.Selected(); ok {
 				return m.connectTo(h)
 			}
 			return m, nil
@@ -341,6 +382,16 @@ func (m appModel) updateAddEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyEnter:
 			return m.saveHostForm()
+		case tea.KeyLeft:
+			if m.hostForm.focusIdx == int(fieldAuthMode) {
+				m.hostForm.CycleAuthMode(-1)
+				return m, nil
+			}
+		case tea.KeyRight:
+			if m.hostForm.focusIdx == int(fieldAuthMode) {
+				m.hostForm.CycleAuthMode(1)
+				return m, nil
+			}
 		}
 	}
 	cmd := m.hostForm.Update(msg)
@@ -353,7 +404,7 @@ func (m appModel) updateAddEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
 // label or address itself was the thing being edited) and preserves fields
 // the form doesn't expose (tags, favorite, last-connected, notes).
 func (m appModel) saveHostForm() (tea.Model, tea.Cmd) {
-	h, err := m.hostForm.toHost()
+	h, password, err := m.hostForm.toHost()
 	if err != nil {
 		m.hostForm.err = err.Error()
 		return m, nil
@@ -367,6 +418,7 @@ func (m appModel) saveHostForm() (tea.Model, tea.Cmd) {
 	groupName := strings.TrimSpace(m.hostForm.inputs[fieldGroup].Value())
 	h.GroupID = store.UpsertGroup(s, groupName, "")
 
+	var finalID string
 	if m.hostForm.editing {
 		found := false
 		for i := range s.Hosts {
@@ -376,7 +428,13 @@ func (m appModel) saveHostForm() (tea.Model, tea.Cmd) {
 				h.Favorite = s.Hosts[i].Favorite
 				h.LastConnectedAt = s.Hosts[i].LastConnectedAt
 				h.Notes = s.Hosts[i].Notes
+				// Switching away from password auth: clean up the now-
+				// orphaned keychain entry rather than leaving it behind.
+				if s.Hosts[i].Identity.Kind == model.IdentityPassword && h.Identity.Kind != model.IdentityPassword {
+					_ = keychain.DeletePassword(h.ID)
+				}
 				s.Hosts[i] = h
+				finalID = h.ID
 				found = true
 				break
 			}
@@ -387,7 +445,17 @@ func (m appModel) saveHostForm() (tea.Model, tea.Cmd) {
 		}
 	} else {
 		h.ID = ""
-		store.UpsertHost(s, h)
+		finalID = store.UpsertHost(s, h)
+	}
+
+	// A blank password on an edit of an already-password host means "keep
+	// the existing one" (hostForm.toHost enforces this — see its comment);
+	// only write to the keychain when a new password was actually entered.
+	if h.Identity.Kind == model.IdentityPassword && password != "" {
+		if err := keychain.SetPassword(finalID, password); err != nil {
+			m.hostForm.err = fmt.Sprintf("host saved, but could not store the password: %v", err)
+			return m, nil
+		}
 	}
 
 	if err := store.Save(s); err != nil {
@@ -449,6 +517,83 @@ func (m *appModel) refreshFromStore(s *model.Store) {
 // connectFinishedMsg is delivered once the suspended ssh session (started
 // by connectTo) exits and bubbletea has restored the terminal to minissh.
 type connectFinishedMsg struct{ err error }
+
+// sessionRedrawInterval is how often the HOSTS panel repaints while an
+// embedded SSH session is active, picking up whatever the remote side has
+// sent since the last frame.
+const sessionRedrawInterval = 30 * time.Millisecond
+
+// sessionEndedMsg is delivered once an embedded session's pty closes —
+// the remote end hung up, the local ssh process exited, or the session was
+// closed some other way.
+type sessionEndedMsg struct{}
+
+// sessionRedrawMsg periodically wakes Update (and therefore View) while a
+// session is embedded, so its virtual screen — updated asynchronously by
+// sshsession's own background read loop — actually gets repainted.
+type sessionRedrawMsg struct{}
+
+func sessionRedrawTick() tea.Cmd {
+	return tea.Tick(sessionRedrawInterval, func(time.Time) tea.Msg {
+		return sessionRedrawMsg{}
+	})
+}
+
+func waitSessionDone(s *sshsession.Session) tea.Cmd {
+	return func() tea.Msg {
+		<-s.Done()
+		return sessionEndedMsg{}
+	}
+}
+
+// startEmbeddedSession starts h's SSH session in a pty and renders it
+// inline in the HOSTS panel (see mainView). If the pty/session fails to
+// start for any reason, it falls back to the full-screen connectTo path
+// instead of failing outright — that path is simpler and already proven,
+// so it's the safety net if embedding ever doesn't work for a given host
+// or environment.
+func (m appModel) startEmbeddedSession(h model.Host) (tea.Model, tea.Cmd) {
+	sess, err := sshsession.Start(h, m.hostsWidth, m.hostsContentHeight)
+	if err != nil {
+		return m.connectTo(h)
+	}
+
+	if s, err := store.Load(); err == nil {
+		if store.RecordConnected(s, h.ID, time.Now()) {
+			_ = store.Save(s)
+		}
+	}
+
+	m.activeSession = sess
+	m.activeSessionHost = h
+	return m, tea.Batch(waitSessionDone(sess), sessionRedrawTick())
+}
+
+// updateActiveSession forwards every key event into the embedded session's
+// pty instead of minissh's own navigation — while a session is active, it
+// owns all input, the same way overlay/searching states already do.
+func (m appModel) updateActiveSession(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if km, ok := msg.(tea.KeyMsg); ok {
+		if b := keyToBytes(km); b != nil {
+			_, _ = m.activeSession.Write(b)
+		}
+	}
+	return m, nil
+}
+
+// endSession tears down the embedded session and returns the HOSTS panel
+// to its normal table view, reloading from the store so anything changed
+// while connected (or the just-recorded LastConnectedAt) shows up.
+func (m appModel) endSession() (tea.Model, tea.Cmd) {
+	if m.activeSession != nil {
+		_ = m.activeSession.Close()
+	}
+	m.activeSession = nil
+	if s, err := store.Load(); err == nil {
+		m.refreshFromStore(s)
+	}
+	return m, nil
+}
 
 // connectTo suspends the TUI and hands the terminal to a real ssh child
 // process via tea.ExecProcess, instead of quitting the program the way
@@ -650,10 +795,17 @@ func (m appModel) mainView() string {
 		Render(m.groups.View(m.groupsWidth, m.focus == focusGroups))
 
 	var hostsContent string
-	if m.homeView {
+	switch {
+	case m.activeSession != nil:
+		// Once a session is active, every keystroke is forwarded to it
+		// (see updateActiveSession) — there's no in-session key to fall
+		// back to full-screen; "E" is only a pre-connect choice.
+		header := panelHeaderStyle(true).Render(fmt.Sprintf("SESSION — %s", m.activeSessionHost.Label))
+		hostsContent = header + "\n" + m.activeSession.Render(m.hostsWidth, m.hostsContentHeight)
+	case m.homeView:
 		header := panelHeaderStyle(m.focus == focusHosts).Render("DASHBOARD")
 		hostsContent = header + "\n" + dashboardView(m.allHosts, m.allGroups, m.statuses)
-	} else {
+	default:
 		hostsContent = m.hosts.View(m.focus == focusHosts, fmt.Sprintf("HOSTS (%d)", len(m.hosts.hosts)))
 	}
 	hostsBox := panelBorderStyle(m.focus == focusHosts).

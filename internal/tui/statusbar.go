@@ -43,8 +43,8 @@ func hintsForFocus(f focus) [][2]string {
 		return append([][2]string{{"j/k", "move"}, {"space", "expand"}, {"enter", "drill in"}}, base...)
 	case focusHosts:
 		return append([][2]string{
-			{"j/k", "move"}, {"enter", "connect"}, {"space", "favorite"}, {"s", "sort"},
-			{"a", "add"}, {"e", "edit"}, {"d", "delete"},
+			{"j/k", "move"}, {"enter", "connect"}, {"E", "connect full-screen"},
+			{"space", "favorite"}, {"s", "sort"}, {"a", "add"}, {"e", "edit"}, {"d", "delete"},
 		}, base...)
 	default:
 		return base

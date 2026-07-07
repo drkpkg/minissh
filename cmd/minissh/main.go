@@ -29,7 +29,7 @@ func main() {
 func rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "minissh",
-		Short:         "A Termius-compatible SSH host launcher",
+		Short:         "A keyboard-first SSH host manager for the terminal",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
