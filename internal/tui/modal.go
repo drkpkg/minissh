@@ -34,7 +34,8 @@ func renderModal(width, height int, content string) string {
 // hostFormField is one field in the Add/Edit host modal. fieldAuthMode is
 // not a textinput — it's a 3-way agent/key/password selector, cycled with
 // ←/→. fieldSecret is a single textinput whose meaning (key path vs
-// password, masked or not) depends on the current auth mode.
+// password, masked or not) depends on the current auth mode. fieldKeyPass
+// is only shown in key mode, alongside fieldSecret's key path.
 type hostFormField int
 
 const (
@@ -45,6 +46,7 @@ const (
 	fieldGroup
 	fieldAuthMode
 	fieldSecret
+	fieldKeyPass
 	fieldCount
 )
 
@@ -55,6 +57,7 @@ var hostFormLabels = [fieldCount]string{
 	fieldUsername: "Username",
 	fieldGroup:    "Group",
 	fieldAuthMode: "Auth",
+	fieldKeyPass:  "Passphrase",
 }
 
 // authMode is the selected authentication method in the Add/Edit modal.
@@ -90,6 +93,10 @@ type hostForm struct {
 	// save then means "keep the existing stored password" instead of
 	// "clear it" or failing validation.
 	originalAuthPassword bool
+	// originalAuthKey mirrors originalAuthPassword for fieldKeyPass: a
+	// blank passphrase field on an edit of an already-key host means "keep
+	// whatever's stored (if anything)", never "clear it".
+	originalAuthKey bool
 
 	inputs   [fieldCount]textinput.Model // fieldAuthMode's entry is unused
 	authMode authMode
@@ -110,7 +117,9 @@ func newHostForm(editing bool, h model.Host, groupName string) hostForm {
 	switch h.Identity.Kind {
 	case model.IdentityKey:
 		f.authMode = authKey
+		f.originalAuthKey = true
 		values[fieldSecret] = h.Identity.KeyPath
+		// fieldKeyPass deliberately left blank — never re-displays a stored secret.
 	case model.IdentityPassword:
 		f.authMode = authPassword
 		f.originalAuthPassword = true
@@ -140,8 +149,9 @@ func portValue(port int) string {
 	return strconv.Itoa(port)
 }
 
-// syncSecretField updates the fieldSecret input's placeholder and masking
-// to match the current auth mode. Called whenever authMode changes.
+// syncSecretField updates the fieldSecret/fieldKeyPass inputs' placeholder
+// and masking to match the current auth mode. Called whenever authMode
+// changes.
 func (f *hostForm) syncSecretField() {
 	ti := &f.inputs[fieldSecret]
 	switch f.authMode {
@@ -159,6 +169,15 @@ func (f *hostForm) syncSecretField() {
 	default:
 		ti.Placeholder = ""
 		ti.EchoMode = textinput.EchoNormal
+	}
+
+	kp := &f.inputs[fieldKeyPass]
+	kp.EchoMode = textinput.EchoPassword
+	kp.EchoCharacter = '•'
+	if f.editing && f.originalAuthKey {
+		kp.Placeholder = "(unchanged — leave blank to keep current passphrase)"
+	} else {
+		kp.Placeholder = "passphrase (optional, leave blank if none)"
 	}
 }
 
@@ -181,14 +200,28 @@ func (f *hostForm) blurCurrent() {
 	}
 }
 
-// Next/Prev skip fieldSecret entirely when auth mode is agent — there's
-// nothing to fill in for agent auth.
+// skipField reports whether field has nothing to fill in for the current
+// auth mode: fieldSecret is meaningless for agent auth, and fieldKeyPass
+// only applies to key auth.
+func (f *hostForm) skipField(field hostFormField) bool {
+	switch field {
+	case fieldSecret:
+		return f.authMode == authAgent
+	case fieldKeyPass:
+		return f.authMode != authKey
+	default:
+		return false
+	}
+}
+
+// Next/Prev skip fields that don't apply to the current auth mode (see
+// skipField).
 func (f *hostForm) Next() {
 	f.blurCurrent()
 	next := f.focusIdx
 	for {
 		next = (next + 1) % int(fieldCount)
-		if hostFormField(next) == fieldSecret && f.authMode == authAgent {
+		if f.skipField(hostFormField(next)) {
 			continue
 		}
 		break
@@ -202,7 +235,7 @@ func (f *hostForm) Prev() {
 	prev := f.focusIdx
 	for {
 		prev = (prev - 1 + int(fieldCount)) % int(fieldCount)
-		if hostFormField(prev) == fieldSecret && f.authMode == authAgent {
+		if f.skipField(hostFormField(prev)) {
 			continue
 		}
 		break
@@ -220,44 +253,54 @@ func (f *hostForm) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// toHost validates the form and converts it into a model.Host plus the
-// plaintext password to store in the keychain (empty unless auth mode is
-// password and a new password was actually entered — the caller decides
-// what "empty" means: for a fresh add it's always required, for an edit of
-// an already-password host it means "keep the existing one"). GroupID is
-// left unset — the caller resolves the group-name input into an ID via
-// store.UpsertGroup, since that requires the live store.
-func (f hostForm) toHost() (model.Host, string, error) {
+// formSecrets carries the plaintext secret(s) toHost extracted from the
+// form, for the caller to store in the keychain. Only the field matching
+// the form's auth mode is ever populated.
+type formSecrets struct {
+	Password      string
+	KeyPassphrase string
+}
+
+// toHost validates the form and converts it into a model.Host plus any
+// plaintext secret to store in the keychain (empty unless a new secret was
+// actually entered — the caller decides what "empty" means: for a fresh
+// add a password is always required, for an edit of an already-password
+// host a blank field means "keep the existing one"; a key passphrase is
+// always optional, blank on edit likewise means "keep the existing one, if
+// any"). GroupID is left unset — the caller resolves the group-name input
+// into an ID via store.UpsertGroup, since that requires the live store.
+func (f hostForm) toHost() (model.Host, formSecrets, error) {
 	address := strings.TrimSpace(f.inputs[fieldAddress].Value())
 	if address == "" {
-		return model.Host{}, "", fmt.Errorf("address is required")
+		return model.Host{}, formSecrets{}, fmt.Errorf("address is required")
 	}
 
 	port := 22
 	if p := strings.TrimSpace(f.inputs[fieldPort].Value()); p != "" {
 		v, err := strconv.Atoi(p)
 		if err != nil || v <= 0 {
-			return model.Host{}, "", fmt.Errorf("invalid port %q", p)
+			return model.Host{}, formSecrets{}, fmt.Errorf("invalid port %q", p)
 		}
 		port = v
 	}
 
 	var identity model.Identity
-	var password string
+	var secrets formSecrets
 	switch f.authMode {
 	case authKey:
 		kp := strings.TrimSpace(f.inputs[fieldSecret].Value())
 		if kp == "" {
-			return model.Host{}, "", fmt.Errorf("key path is required for key auth")
+			return model.Host{}, formSecrets{}, fmt.Errorf("key path is required for key auth")
 		}
 		identity = model.Identity{Kind: model.IdentityKey, KeyPath: kp}
+		secrets.KeyPassphrase = f.inputs[fieldKeyPass].Value()
 	case authPassword:
 		pw := f.inputs[fieldSecret].Value()
 		if pw == "" && (!f.editing || !f.originalAuthPassword) {
-			return model.Host{}, "", fmt.Errorf("password is required for password auth")
+			return model.Host{}, formSecrets{}, fmt.Errorf("password is required for password auth")
 		}
 		identity = model.Identity{Kind: model.IdentityPassword}
-		password = pw
+		secrets.Password = pw
 	default:
 		identity = model.Identity{Kind: model.IdentityAgent}
 	}
@@ -274,7 +317,7 @@ func (f hostForm) toHost() (model.Host, string, error) {
 		Port:     port,
 		Username: strings.TrimSpace(f.inputs[fieldUsername].Value()),
 		Identity: identity,
-	}, password, nil
+	}, secrets, nil
 }
 
 func (f hostForm) View() string {
@@ -289,8 +332,8 @@ func (f hostForm) View() string {
 
 	for i := 0; i < int(fieldCount); i++ {
 		field := hostFormField(i)
-		if field == fieldSecret && f.authMode == authAgent {
-			continue // nothing to show for agent auth
+		if f.skipField(field) {
+			continue // nothing to show for this field in the current auth mode
 		}
 
 		label := f.fieldLabel(field)

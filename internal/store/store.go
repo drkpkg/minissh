@@ -44,6 +44,14 @@ func Load() (*model.Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// hosts.json never holds secrets (those live in the OS keychain), but
+	// it does hold addresses/usernames/notes — re-assert restrictive perms
+	// on every load, not just on write, so a file that predates this or
+	// arrived via some other path (backup restore, manual copy) gets
+	// corrected instead of silently keeping looser permissions forever.
+	_ = os.Chmod(path, 0o600)
+	_ = os.Chmod(filepath.Dir(path), 0o700)
+
 	var s model.Store
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, err

@@ -1,12 +1,24 @@
 package connect
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/drkpkg/minissh/internal/model"
 )
+
+// writeFakeExecutable creates an empty, executable file named name in dir —
+// enough for exec.LookPath to find it; buildCommand/sshpassCommand never
+// actually run it, they only construct an argv.
+func writeFakeExecutable(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), nil, 0o755); err != nil {
+		t.Fatalf("writeFakeExecutable(%q): %v", name, err)
+	}
+}
 
 func TestArgs(t *testing.T) {
 	cases := []struct {
@@ -56,6 +68,53 @@ func TestCommandBuildsExpectedArgv(t *testing.T) {
 	joined := strings.Join(cmd.Args, " ")
 	if !strings.Contains(joined, "root@10.0.0.1") || !strings.Contains(joined, "-p 2222") {
 		t.Fatalf("unexpected args: %v", cmd.Args)
+	}
+}
+
+func TestSshpassCommandUsesPromptOverrideForPassphrase(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "ssh")
+	writeFakeExecutable(t, dir, "sshpass")
+	t.Setenv("PATH", dir)
+
+	h := model.Host{Address: "10.0.0.1", Identity: model.Identity{Kind: model.IdentityKey, KeyPath: "/x"}}
+	bin, argv, ok := sshpassCommand("s3cret", "passphrase", h)
+	if !ok {
+		t.Fatal("expected ok=true when sshpass and ssh are both on PATH")
+	}
+	if !strings.HasSuffix(bin, "sshpass") {
+		t.Fatalf("expected sshpass binary, got %q", bin)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "-P passphrase") {
+		t.Fatalf("expected a -P passphrase prompt override in argv, got %v", argv)
+	}
+	if !strings.Contains(joined, "-p s3cret") {
+		t.Fatalf("expected -p s3cret in argv, got %v", argv)
+	}
+}
+
+func TestSshpassCommandOmitsPromptOverrideForPassword(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "ssh")
+	writeFakeExecutable(t, dir, "sshpass")
+	t.Setenv("PATH", dir)
+
+	h := model.Host{Address: "10.0.0.1"}
+	_, argv, ok := sshpassCommand("hunter2", "", h)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if strings.Contains(strings.Join(argv, " "), "-P") {
+		t.Fatalf("expected no -P override for sshpass's default password-prompt match, got %v", argv)
+	}
+}
+
+func TestSshpassCommandFallsBackWhenSshpassMissing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // empty: neither sshpass nor ssh present
+	_, _, ok := sshpassCommand("hunter2", "", model.Host{Address: "10.0.0.1"})
+	if ok {
+		t.Fatal("expected ok=false when sshpass isn't on PATH")
 	}
 }
 

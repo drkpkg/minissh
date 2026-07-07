@@ -36,3 +36,38 @@ func DeletePassword(hostID string) error {
 	}
 	return err
 }
+
+// keyPassAccount returns the keychain account name for hostID's SSH key
+// passphrase, distinct from its plain password account so a host can't
+// collide between the two if it's ever reconfigured from one auth mode to
+// the other.
+func keyPassAccount(hostID string) string {
+	return hostID + ":keypass"
+}
+
+// SetKeyPassphrase stores the passphrase for hostID's private key,
+// overwriting any existing entry.
+func SetKeyPassphrase(hostID, passphrase string) error {
+	return keyring.Set(service, keyPassAccount(hostID), passphrase)
+}
+
+// GetKeyPassphrase retrieves the passphrase for hostID's private key. It
+// returns ("", nil) if none is stored, rather than an error, so callers can
+// fall back to an interactive prompt without special-casing "not found".
+func GetKeyPassphrase(hostID string) (string, error) {
+	pass, err := keyring.Get(service, keyPassAccount(hostID))
+	if errors.Is(err, keyring.ErrNotFound) {
+		return "", nil
+	}
+	return pass, err
+}
+
+// DeleteKeyPassphrase removes the stored key passphrase for the given host
+// ID, if any.
+func DeleteKeyPassphrase(hostID string) error {
+	err := keyring.Delete(service, keyPassAccount(hostID))
+	if errors.Is(err, keyring.ErrNotFound) {
+		return nil
+	}
+	return err
+}

@@ -25,6 +25,18 @@ linters:
         text: "G304"
         linters:
           - gosec
+      # 0700 is the correct (tightest usable) permission for a directory,
+      # not a weakness — gosec's G302 doesn't distinguish files from
+      # directories when checking the "0600 or less" threshold.
+      - path: internal/store/store\.go
+        text: "G302"
+        linters:
+          - gosec
+      # Fake executables on PATH for exec.LookPath in tests need the exec bit.
+      - path: internal/connect/connect_test\.go
+        text: "G306"
+        linters:
+          - gosec
 
 run:
   timeout: 5m

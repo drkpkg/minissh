@@ -44,10 +44,11 @@ func Args(h model.Host) []string {
 //
 // For password-auth hosts, it looks up a stored password in the OS
 // keychain and, if both a password and the `sshpass` binary are available,
-// injects it non-interactively. Otherwise it falls back to plain `ssh`,
-// which prompts for the password itself — this is what the CSV/JSON
-// importers hit before keychain-storage of a password has happened, and
-// what any host hits if sshpass isn't installed.
+// injects it non-interactively. Key-auth hosts get the same treatment for
+// a stored key passphrase. Otherwise it falls back to plain `ssh`, which
+// prompts interactively itself — this is what the CSV/JSON importers hit
+// before keychain-storage of a secret has happened, and what any host hits
+// if sshpass isn't installed.
 func Exec(h model.Host) error {
 	bin, argv, err := buildCommand(h)
 	if err != nil {
@@ -71,15 +72,20 @@ func Command(h model.Host) (*exec.Cmd, error) {
 }
 
 func buildCommand(h model.Host) (bin string, argv []string, err error) {
-	if h.Identity.Kind == model.IdentityPassword {
+	switch h.Identity.Kind {
+	case model.IdentityPassword:
 		if pw, err := keychain.GetPassword(h.ID); err == nil && pw != "" {
-			if sshpassBin, err := exec.LookPath("sshpass"); err == nil {
-				sshBin, err := exec.LookPath("ssh")
-				if err != nil {
-					return "", nil, fmt.Errorf("ssh binary not found in PATH: %w", err)
-				}
-				argv := append([]string{sshpassBin, "-p", pw, sshBin}, Args(h)...)
-				return sshpassBin, argv, nil
+			if bin, argv, ok := sshpassCommand(pw, "", h); ok {
+				return bin, argv, nil
+			}
+		}
+	case model.IdentityKey:
+		// sshpass's default prompt detection looks for "assword", which
+		// doesn't match ssh's "Enter passphrase for key ...:" prompt — -P
+		// overrides it with a substring that does.
+		if pass, err := keychain.GetKeyPassphrase(h.ID); err == nil && pass != "" {
+			if bin, argv, ok := sshpassCommand(pass, "passphrase", h); ok {
+				return bin, argv, nil
 			}
 		}
 	}
@@ -89,4 +95,26 @@ func buildCommand(h model.Host) (bin string, argv []string, err error) {
 		return "", nil, fmt.Errorf("ssh binary not found in PATH: %w", err)
 	}
 	return sshBin, append([]string{sshBin}, Args(h)...), nil
+}
+
+// sshpassCommand builds an argv that runs ssh for h under sshpass, feeding
+// it secret non-interactively. prompt, if non-empty, is passed as sshpass's
+// -P (a substring to match in the prompt instead of its "assword" default).
+// ok is false if either binary isn't on PATH, so the caller can fall back
+// to plain ssh (which will just prompt interactively) instead of erroring.
+func sshpassCommand(secret, prompt string, h model.Host) (bin string, argv []string, ok bool) {
+	sshpassBin, err := exec.LookPath("sshpass")
+	if err != nil {
+		return "", nil, false
+	}
+	sshBin, err := exec.LookPath("ssh")
+	if err != nil {
+		return "", nil, false
+	}
+	head := []string{sshpassBin}
+	if prompt != "" {
+		head = append(head, "-P", prompt)
+	}
+	head = append(head, "-p", secret, sshBin)
+	return sshpassBin, append(head, Args(h)...), true
 }

@@ -70,12 +70,17 @@ type appModel struct {
 	hosts     hostsTable
 	statuses  map[string]bool
 
-	// activeSession is non-nil while an SSH session is embedded and
-	// rendering inline in the HOSTS panel — while set, all input is
-	// forwarded to it instead of normal panel navigation (the same
-	// full-input-capture shape overlay/searching already use).
-	activeSession     *sshsession.Session
-	activeSessionHost model.Host
+	// sessions holds every embedded SSH session currently alive, whether or
+	// not it's the one on screen — once started, a host's session keeps
+	// running in the background until it ends or is explicitly closed (see
+	// sessions_bar.go for the tab strip these back). inSessionMode is true
+	// while input is being forwarded to sessions[currentSessionIdx] instead
+	// of normal panel navigation (the same full-input-capture shape
+	// overlay/searching already use); currentSessionIdx is only meaningful
+	// while inSessionMode is true.
+	sessions          []liveSession
+	currentSessionIdx int
+	inSessionMode     bool
 
 	searching   bool
 	searchQuery string
@@ -146,15 +151,15 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case sessionEndedMsg:
-		return m.endSession()
+		return m.handleSessionEnded(tm.hostID)
 	case sessionRedrawMsg:
-		if m.activeSession == nil {
-			return m, nil // session already ended; drop the stale tick rather than reschedule forever
+		if !m.inSessionMode {
+			return m, nil // detached, or no sessions left; drop the stale tick rather than reschedule forever
 		}
 		return m, sessionRedrawTick()
 	}
 
-	if m.activeSession != nil {
+	if m.inSessionMode && len(m.sessions) > 0 {
 		return m.updateActiveSession(msg)
 	}
 
@@ -188,6 +193,9 @@ func (m *appModel) applySizes() {
 		hostsW = 20
 	}
 	bodyH := m.height - 4 // status bar (2 lines) + panel header/border allowance
+	if len(m.sessions) > 0 {
+		bodyH-- // room for the session tab strip mainView prepends above the body
+	}
 	if bodyH < 5 {
 		bodyH = 5
 	}
@@ -198,8 +206,8 @@ func (m *appModel) applySizes() {
 	m.hosts.SetSize(hostsW, contentH)
 	m.sourceList.SetSize(m.width, m.height)
 
-	if m.activeSession != nil {
-		_ = m.activeSession.Resize(hostsW, contentH)
+	if m.inSessionMode && m.currentSessionIdx < len(m.sessions) {
+		_ = m.sessions[m.currentSessionIdx].sess.Resize(hostsW, contentH)
 	}
 }
 
@@ -207,6 +215,11 @@ func (m appModel) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if km, ok := msg.(tea.KeyMsg); ok {
 		switch km.String() {
 		case "ctrl+c", "q":
+			// Sessions run as real child ssh processes even when not on
+			// screen — close them all rather than leaking them on quit.
+			for _, ls := range m.sessions {
+				_ = ls.sess.Close()
+			}
 			return m, tea.Quit
 		case "h", "shift+tab":
 			m.moveFocus(-1)
@@ -363,6 +376,11 @@ func (m appModel) updateHostsFocus(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.overlay = overlayDeleteConfirm
 			}
 			return m, nil
+		case "x":
+			if h, ok := m.hosts.Selected(); ok {
+				m.closeSessionForHost(h.ID)
+			}
+			return m, nil
 		}
 	}
 	cmd := m.hosts.Update(msg)
@@ -405,7 +423,7 @@ func (m appModel) updateAddEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
 // label or address itself was the thing being edited) and preserves fields
 // the form doesn't expose (tags, favorite, last-connected, notes).
 func (m appModel) saveHostForm() (tea.Model, tea.Cmd) {
-	h, password, err := m.hostForm.toHost()
+	h, secrets, err := m.hostForm.toHost()
 	if err != nil {
 		m.hostForm.err = err.Error()
 		return m, nil
@@ -429,10 +447,13 @@ func (m appModel) saveHostForm() (tea.Model, tea.Cmd) {
 				h.Favorite = s.Hosts[i].Favorite
 				h.LastConnectedAt = s.Hosts[i].LastConnectedAt
 				h.Notes = s.Hosts[i].Notes
-				// Switching away from password auth: clean up the now-
+				// Switching away from password/key auth: clean up the now-
 				// orphaned keychain entry rather than leaving it behind.
 				if s.Hosts[i].Identity.Kind == model.IdentityPassword && h.Identity.Kind != model.IdentityPassword {
 					_ = keychain.DeletePassword(h.ID)
+				}
+				if s.Hosts[i].Identity.Kind == model.IdentityKey && h.Identity.Kind != model.IdentityKey {
+					_ = keychain.DeleteKeyPassphrase(h.ID)
 				}
 				s.Hosts[i] = h
 				finalID = h.ID
@@ -449,12 +470,19 @@ func (m appModel) saveHostForm() (tea.Model, tea.Cmd) {
 		finalID = store.UpsertHost(s, h)
 	}
 
-	// A blank password on an edit of an already-password host means "keep
-	// the existing one" (hostForm.toHost enforces this — see its comment);
-	// only write to the keychain when a new password was actually entered.
-	if h.Identity.Kind == model.IdentityPassword && password != "" {
-		if err := keychain.SetPassword(finalID, password); err != nil {
+	// A blank secret on an edit of an already-matching-mode host means
+	// "keep the existing one" (hostForm.toHost enforces this — see its
+	// comment); only write to the keychain when a new secret was actually
+	// entered.
+	if h.Identity.Kind == model.IdentityPassword && secrets.Password != "" {
+		if err := keychain.SetPassword(finalID, secrets.Password); err != nil {
 			m.hostForm.err = fmt.Sprintf("host saved, but could not store the password: %v", err)
+			return m, nil
+		}
+	}
+	if h.Identity.Kind == model.IdentityKey && secrets.KeyPassphrase != "" {
+		if err := keychain.SetKeyPassphrase(finalID, secrets.KeyPassphrase); err != nil {
+			m.hostForm.err = fmt.Sprintf("host saved, but could not store the key passphrase: %v", err)
 			return m, nil
 		}
 	}
@@ -494,6 +522,9 @@ func (m appModel) confirmDelete() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	store.DeleteHostByID(s, m.deleteTarget.ID)
+	// Secrets shouldn't outlive the host record they belong to.
+	_ = keychain.DeletePassword(m.deleteTarget.ID)
+	_ = keychain.DeleteKeyPassphrase(m.deleteTarget.ID)
 	if err := store.Save(s); err != nil {
 		m.overlay = overlayNone
 		m.deleteTarget = nil
@@ -520,17 +551,17 @@ func (m *appModel) refreshFromStore(s *model.Store) {
 type connectFinishedMsg struct{ err error }
 
 // sessionRedrawInterval is how often the HOSTS panel repaints while an
-// embedded SSH session is active, picking up whatever the remote side has
+// embedded SSH session is focused, picking up whatever the remote side has
 // sent since the last frame.
 const sessionRedrawInterval = 30 * time.Millisecond
 
-// sessionEndedMsg is delivered once an embedded session's pty closes —
+// sessionEndedMsg is delivered once hostID's embedded session pty closes —
 // the remote end hung up, the local ssh process exited, or the session was
-// closed some other way.
-type sessionEndedMsg struct{}
+// closed some other way (including explicitly, via the "x" keybinding).
+type sessionEndedMsg struct{ hostID string }
 
 // sessionRedrawMsg periodically wakes Update (and therefore View) while a
-// session is embedded, so its virtual screen — updated asynchronously by
+// session is focused, so its virtual screen — updated asynchronously by
 // sshsession's own background read loop — actually gets repainted.
 type sessionRedrawMsg struct{}
 
@@ -540,20 +571,44 @@ func sessionRedrawTick() tea.Cmd {
 	})
 }
 
-func waitSessionDone(s *sshsession.Session) tea.Cmd {
+// waitSessionDone reports hostID once s ends, however it ends — one
+// in-flight instance of this per open session, independent of which tab is
+// currently focused.
+func waitSessionDone(hostID string, s *sshsession.Session) tea.Cmd {
 	return func() tea.Msg {
 		<-s.Done()
-		return sessionEndedMsg{}
+		return sessionEndedMsg{hostID: hostID}
 	}
 }
 
-// startEmbeddedSession starts h's SSH session in a pty and renders it
-// inline in the HOSTS panel (see mainView). If the pty/session fails to
-// start for any reason, it falls back to the full-screen connectTo path
-// instead of failing outright — that path is simpler and already proven,
-// so it's the safety net if embedding ever doesn't work for a given host
-// or environment.
+// liveSessionHostIDs returns the set of host IDs with a currently-running
+// session, for the host table's live-session marker.
+func (m appModel) liveSessionHostIDs() map[string]bool {
+	ids := make(map[string]bool, len(m.sessions))
+	for _, ls := range m.sessions {
+		ids[ls.host.ID] = true
+	}
+	return ids
+}
+
+// startEmbeddedSession focuses h's session in the HOSTS panel (see
+// mainView), starting a new one in a pty if h doesn't already have one
+// running — re-pressing enter on a host that's already open just switches
+// to its existing tab instead of opening a second connection. If starting a
+// genuinely new pty/session fails for any reason, it falls back to the
+// full-screen connectTo path instead of failing outright — that path is
+// simpler and already proven, so it's the safety net if embedding ever
+// doesn't work for a given host or environment.
 func (m appModel) startEmbeddedSession(h model.Host) (tea.Model, tea.Cmd) {
+	for i, ls := range m.sessions {
+		if ls.host.ID == h.ID {
+			m.currentSessionIdx = i
+			m.inSessionMode = true
+			m.applySizes() // in case the panel resized while this session was backgrounded
+			return m, nil
+		}
+	}
+
 	sess, err := sshsession.Start(h, m.hostsWidth, m.hostsContentHeight)
 	if err != nil {
 		return m.connectTo(h)
@@ -565,31 +620,113 @@ func (m appModel) startEmbeddedSession(h model.Host) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.activeSession = sess
-	m.activeSessionHost = h
-	return m, tea.Batch(waitSessionDone(sess), sessionRedrawTick())
+	m.sessions = append(m.sessions, liveSession{host: h, sess: sess})
+	m.currentSessionIdx = len(m.sessions) - 1
+	m.inSessionMode = true
+	// This may be the first session — the tab strip now takes a body row it
+	// didn't before, so the just-started pty needs sizing against the
+	// budget that accounts for it, not the stale one Start was called with.
+	m.applySizes()
+	m.hosts.SetLiveSessions(m.liveSessionHostIDs())
+	return m, tea.Batch(waitSessionDone(h.ID, sess), sessionRedrawTick())
 }
 
-// updateActiveSession forwards every key event into the embedded session's
-// pty instead of minissh's own navigation — while a session is active, it
-// owns all input, the same way overlay/searching states already do.
+// cycleSession moves currentSessionIdx by delta (±1, wrapping) and resizes
+// the newly-focused session to match the panel, in case it drifted while
+// backgrounded (e.g. a window resize happened while it wasn't on screen).
+func (m *appModel) cycleSession(delta int) {
+	if len(m.sessions) == 0 {
+		return
+	}
+	n := len(m.sessions)
+	m.currentSessionIdx = ((m.currentSessionIdx+delta)%n + n) % n
+	_ = m.sessions[m.currentSessionIdx].sess.Resize(m.hostsWidth, m.hostsContentHeight)
+}
+
+// closeSessionForHost kills hostID's session, if any, without touching
+// m.sessions directly — the resulting sessionEndedMsg (delivered through
+// the same waitSessionDone every session ends through) is the single place
+// list membership actually changes, whether a session ends because the
+// remote hung up or because the user asked to close it here.
+func (m appModel) closeSessionForHost(hostID string) {
+	for _, ls := range m.sessions {
+		if ls.host.ID == hostID {
+			_ = ls.sess.Close()
+			return
+		}
+	}
+}
+
+// updateActiveSession handles the reserved tab-switch/detach combos, then
+// forwards every other key event into the focused session's pty instead of
+// minissh's own navigation — while attached, a session owns all input, the
+// same way overlay/searching states already do. ctrl+←/→ and ctrl+\ are
+// necessarily stolen from the remote session to make this possible, the
+// same trade-off every terminal multiplexer (tmux, screen) makes by
+// reserving a prefix/combo of its own.
 func (m appModel) updateActiveSession(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if km, ok := msg.(tea.KeyMsg); ok {
-		if b := keyToBytes(km); b != nil {
-			_, _ = m.activeSession.Write(b)
+		// Matched on Type, not km.String(): some terminals send ctrl+arrow
+		// as ESC[1;7C/D (xterm's ctrl+alt modifier code) or urxvt's
+		// ESC[Oc/Od rather than the plain ESC[1;5C/D bubbletea otherwise
+		// expects, which it still parses as KeyCtrlRight/KeyCtrlLeft but
+		// with Alt set — String() would then read "alt+ctrl+right" and
+		// silently miss a plain-string switch, forwarding the escape to
+		// the remote session instead of switching tabs.
+		switch km.Type {
+		case tea.KeyCtrlRight:
+			m.cycleSession(1)
+			return m, nil
+		case tea.KeyCtrlLeft:
+			m.cycleSession(-1)
+			return m, nil
+		case tea.KeyCtrlBackslash:
+			m.inSessionMode = false // detach; the session keeps running in the background
+			return m, nil
+		}
+		if m.currentSessionIdx < len(m.sessions) {
+			if b := keyToBytes(km); b != nil {
+				_, _ = m.sessions[m.currentSessionIdx].sess.Write(b)
+			}
 		}
 	}
 	return m, nil
 }
 
-// endSession tears down the embedded session and returns the HOSTS panel
-// to its normal table view, reloading from the store so anything changed
-// while connected (or the just-recorded LastConnectedAt) shows up.
-func (m appModel) endSession() (tea.Model, tea.Cmd) {
-	if m.activeSession != nil {
-		_ = m.activeSession.Close()
+// handleSessionEnded removes hostID's session from m.sessions — whatever
+// ended it — and, if it was the tab on screen, moves focus to whichever
+// session slid into its place, or back to the host table if none are left.
+// Reloads the store either way so anything changed while connected (the
+// just-recorded LastConnectedAt, etc.) shows up.
+func (m appModel) handleSessionEnded(hostID string) (tea.Model, tea.Cmd) {
+	idx := -1
+	for i, ls := range m.sessions {
+		if ls.host.ID == hostID {
+			idx = i
+			break
+		}
 	}
-	m.activeSession = nil
+	if idx == -1 {
+		return m, nil // already removed (e.g. a duplicate/late done signal)
+	}
+	m.sessions = append(m.sessions[:idx], m.sessions[idx+1:]...)
+
+	switch {
+	case len(m.sessions) == 0:
+		m.inSessionMode = false
+		m.currentSessionIdx = 0
+	case idx < m.currentSessionIdx:
+		m.currentSessionIdx--
+	case m.currentSessionIdx >= len(m.sessions):
+		m.currentSessionIdx = len(m.sessions) - 1
+	}
+	// The tab strip's presence (and thus the body's height budget) may have
+	// just changed — e.g. the last session ending removes it entirely — and
+	// whichever session is now focused (if any) needs resizing to match;
+	// applySizes handles both in one pass.
+	m.applySizes()
+
+	m.hosts.SetLiveSessions(m.liveSessionHostIDs())
 	if s, err := store.Load(); err == nil {
 		m.refreshFromStore(s)
 	}
@@ -780,7 +917,7 @@ func (m appModel) View() string {
 }
 
 func (m appModel) mainView() string {
-	if len(m.allHosts) == 0 {
+	if len(m.allHosts) == 0 && len(m.sessions) == 0 {
 		return renderModal(m.width, m.height, emptyStateView())
 	}
 
@@ -797,12 +934,14 @@ func (m appModel) mainView() string {
 
 	var hostsContent string
 	switch {
-	case m.activeSession != nil:
-		// Once a session is active, every keystroke is forwarded to it
-		// (see updateActiveSession) — there's no in-session key to fall
-		// back to full-screen; "E" is only a pre-connect choice.
-		header := panelHeaderStyle(true).Render(fmt.Sprintf("SESSION — %s", m.activeSessionHost.Label))
-		hostsContent = header + "\n" + m.activeSession.Render(m.hostsWidth, m.hostsContentHeight)
+	case m.inSessionMode && m.currentSessionIdx < len(m.sessions):
+		// Once a session is focused, every keystroke but the reserved
+		// tab-switch/detach combos is forwarded to it (see
+		// updateActiveSession) — there's no in-session key to fall back to
+		// full-screen; "E" is only a pre-connect choice.
+		cur := m.sessions[m.currentSessionIdx]
+		header := panelHeaderStyle(true).Render(fmt.Sprintf("SESSION — %s", cur.host.Label))
+		hostsContent = header + "\n" + cur.sess.Render(m.hostsWidth, m.hostsContentHeight)
 	case m.homeView:
 		header := panelHeaderStyle(m.focus == focusHosts).Render("DASHBOARD")
 		hostsContent = header + "\n" + dashboardView(m.allHosts, m.allGroups, m.statuses)
@@ -826,8 +965,11 @@ func (m appModel) mainView() string {
 	bar := statusBar(m.focus, len(m.hosts.hosts), len(m.allHosts), m.searchQuery, selLabel)
 
 	var top string
+	if len(m.sessions) > 0 {
+		top += sessionTabBarView(m.sessions, m.currentSessionIdx, m.inSessionMode) + "\n"
+	}
 	if m.searching {
-		top = searchBarView(m.searchInput, m.searchField) + "\n"
+		top += searchBarView(m.searchInput, m.searchField) + "\n"
 	}
 
 	return top + body + "\n" + bar

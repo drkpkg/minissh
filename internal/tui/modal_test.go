@@ -57,15 +57,33 @@ func TestHostFormToHostKeyModeSetsKeyIdentity(t *testing.T) {
 	f.inputs[fieldAddress].SetValue("10.0.0.1")
 	f.authMode = authKey
 	f.inputs[fieldSecret].SetValue("~/.ssh/id_ed25519")
-	h, password, err := f.toHost()
+	h, secrets, err := f.toHost()
 	if err != nil {
 		t.Fatalf("toHost: %v", err)
 	}
 	if h.Identity.Kind != model.IdentityKey || h.Identity.KeyPath != "~/.ssh/id_ed25519" {
 		t.Fatalf("expected key identity, got %+v", h.Identity)
 	}
-	if password != "" {
-		t.Fatalf("expected no password for key auth, got %q", password)
+	if secrets.Password != "" {
+		t.Fatalf("expected no password for key auth, got %q", secrets.Password)
+	}
+	if secrets.KeyPassphrase != "" {
+		t.Fatalf("expected no key passphrase when none was entered, got %q", secrets.KeyPassphrase)
+	}
+}
+
+func TestHostFormToHostKeyModeReturnsPassphrase(t *testing.T) {
+	f := newHostForm(false, model.Host{}, "")
+	f.inputs[fieldAddress].SetValue("10.0.0.1")
+	f.authMode = authKey
+	f.inputs[fieldSecret].SetValue("~/.ssh/id_ed25519")
+	f.inputs[fieldKeyPass].SetValue("s3cret-phrase")
+	_, secrets, err := f.toHost()
+	if err != nil {
+		t.Fatalf("toHost: %v", err)
+	}
+	if secrets.KeyPassphrase != "s3cret-phrase" {
+		t.Fatalf("expected key passphrase 's3cret-phrase', got %q", secrets.KeyPassphrase)
 	}
 }
 
@@ -83,15 +101,15 @@ func TestHostFormToHostPasswordModeReturnsPassword(t *testing.T) {
 	f.inputs[fieldAddress].SetValue("10.0.0.1")
 	f.authMode = authPassword
 	f.inputs[fieldSecret].SetValue("hunter2")
-	h, password, err := f.toHost()
+	h, secrets, err := f.toHost()
 	if err != nil {
 		t.Fatalf("toHost: %v", err)
 	}
 	if h.Identity.Kind != model.IdentityPassword {
 		t.Fatalf("expected password identity, got %+v", h.Identity)
 	}
-	if password != "hunter2" {
-		t.Fatalf("expected password 'hunter2', got %q", password)
+	if secrets.Password != "hunter2" {
+		t.Fatalf("expected password 'hunter2', got %q", secrets.Password)
 	}
 }
 
@@ -118,15 +136,34 @@ func TestHostFormToHostPasswordModeBlankOnEditKeepsExisting(t *testing.T) {
 		t.Fatal("expected the password field to never be prefilled with the real secret")
 	}
 
-	h, password, err := f.toHost()
+	h, secrets, err := f.toHost()
 	if err != nil {
 		t.Fatalf("toHost: %v", err)
 	}
 	if h.Identity.Kind != model.IdentityPassword {
 		t.Fatalf("expected identity to remain password, got %+v", h.Identity)
 	}
-	if password != "" {
-		t.Fatalf("expected empty password (meaning 'keep existing'), got %q", password)
+	if secrets.Password != "" {
+		t.Fatalf("expected empty password (meaning 'keep existing'), got %q", secrets.Password)
+	}
+}
+
+func TestHostFormToHostKeyModeBlankOnEditKeepsExistingPassphrase(t *testing.T) {
+	existing := model.Host{ID: "h1", Address: "10.0.0.1", Identity: model.Identity{Kind: model.IdentityKey, KeyPath: "/x"}}
+	f := newHostForm(true, existing, "")
+	if f.authMode != authKey || !f.originalAuthKey {
+		t.Fatalf("expected form primed for key auth, got authMode=%v originalAuthKey=%v", f.authMode, f.originalAuthKey)
+	}
+	if f.inputs[fieldKeyPass].Value() != "" {
+		t.Fatal("expected the passphrase field to never be prefilled with the real secret")
+	}
+
+	_, secrets, err := f.toHost()
+	if err != nil {
+		t.Fatalf("toHost: %v", err)
+	}
+	if secrets.KeyPassphrase != "" {
+		t.Fatalf("expected empty passphrase (meaning 'keep existing'), got %q", secrets.KeyPassphrase)
 	}
 }
 
