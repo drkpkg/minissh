@@ -15,7 +15,7 @@ import (
 	"github.com/zalando/go-keyring"
 	ss "github.com/zalando/go-keyring/secret_service"
 
-	"github.com/danieluremix/minissh/internal/importer"
+	"github.com/drkpkg/minissh/internal/importer"
 )
 
 const (

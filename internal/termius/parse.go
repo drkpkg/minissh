@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/danieluremix/minissh/internal/importer"
-	"github.com/danieluremix/minissh/internal/model"
-	"github.com/danieluremix/minissh/internal/store"
+	"github.com/drkpkg/minissh/internal/importer"
+	"github.com/drkpkg/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/store"
 )
 
 // parsedData is the intermediate, loosely-typed representation of every

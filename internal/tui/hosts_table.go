@@ -7,7 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/danieluremix/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/model"
 )
 
 // sortColumn is which host-table column drives the current sort order.

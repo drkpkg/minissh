@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/danieluremix/minissh/internal/model"
-	"github.com/danieluremix/minissh/internal/store"
+	"github.com/drkpkg/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/store"
 )
 
 // ImportJSON is a best-effort parser for Termius-style JSON exports. Unlike

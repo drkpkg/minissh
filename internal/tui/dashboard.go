@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/danieluremix/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/model"
 )
 
 // dashboardView is the home screen shown before you start browsing:

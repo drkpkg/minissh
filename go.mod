@@ -1,4 +1,4 @@
-module github.com/danieluremix/minissh
+module github.com/drkpkg/minissh
 
 go 1.26.4
 

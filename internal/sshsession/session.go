@@ -23,8 +23,8 @@ import (
 	"github.com/creack/pty"
 	"github.com/hinshun/vt10x"
 
-	"github.com/danieluremix/minissh/internal/connect"
-	"github.com/danieluremix/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/connect"
+	"github.com/drkpkg/minissh/internal/model"
 )
 
 // Mirrors vt10x's unexported attrReverse/attrBold bit values (state.go).

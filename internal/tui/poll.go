@@ -5,8 +5,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/danieluremix/minissh/internal/model"
-	"github.com/danieluremix/minissh/internal/status"
+	"github.com/drkpkg/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/status"
 )
 
 const (

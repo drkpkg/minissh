@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/danieluremix/minissh/internal/model"
-	"github.com/danieluremix/minissh/internal/store"
+	"github.com/drkpkg/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/store"
 )
 
 // testHostForSession is a syntactically valid but guaranteed-non-routable

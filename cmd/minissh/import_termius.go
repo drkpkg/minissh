@@ -8,9 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/danieluremix/minissh/internal/importflow"
-	"github.com/danieluremix/minissh/internal/sources"
-	"github.com/danieluremix/minissh/internal/store"
+	"github.com/drkpkg/minissh/internal/importflow"
+	"github.com/drkpkg/minissh/internal/sources"
+	"github.com/drkpkg/minissh/internal/store"
 )
 
 func importTermiusCmd() *cobra.Command {

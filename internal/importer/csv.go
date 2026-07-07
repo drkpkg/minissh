@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/danieluremix/minissh/internal/model"
-	"github.com/danieluremix/minissh/internal/store"
+	"github.com/drkpkg/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/store"
 )
 
 // csvColumnAliases maps our canonical field name to the header names Termius

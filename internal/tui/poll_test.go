@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/danieluremix/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/model"
 )
 
 func TestProbeHostCmdReportsOnline(t *testing.T) {

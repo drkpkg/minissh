@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/danieluremix/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/model"
 )
 
 // renderModal centers boxed content within a width x height canvas. This is

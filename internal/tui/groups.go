@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/danieluremix/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/model"
 )
 
 // groupNode is one visible row in the flattened groups tree: either the

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danieluremix/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/model"
 )
 
 func TestLoadMissingFileReturnsEmptyStore(t *testing.T) {

@@ -8,12 +8,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/danieluremix/minissh/internal/connect"
-	"github.com/danieluremix/minissh/internal/importflow"
-	"github.com/danieluremix/minissh/internal/model"
-	"github.com/danieluremix/minissh/internal/sources"
-	"github.com/danieluremix/minissh/internal/store"
-	"github.com/danieluremix/minissh/internal/tui"
+	"github.com/drkpkg/minissh/internal/connect"
+	"github.com/drkpkg/minissh/internal/importflow"
+	"github.com/drkpkg/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/sources"
+	"github.com/drkpkg/minissh/internal/store"
+	"github.com/drkpkg/minissh/internal/tui"
 )
 
 // version is set at build time via -ldflags; defaults to "dev" for local builds.

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/danieluremix/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/model"
 )
 
 // detailsView renders the right panel for the given host, or a hint when

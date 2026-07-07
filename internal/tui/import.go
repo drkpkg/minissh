@@ -3,7 +3,7 @@ package tui
 import (
 	"github.com/charmbracelet/bubbles/list"
 
-	"github.com/danieluremix/minissh/internal/sources"
+	"github.com/drkpkg/minissh/internal/sources"
 )
 
 // sourceItem adapts sources.Source to bubbles/list.Item for the import

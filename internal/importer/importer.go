@@ -2,7 +2,7 @@
 // export, ~/.ssh/config) into minissh's model.
 package importer
 
-import "github.com/danieluremix/minissh/internal/model"
+import "github.com/drkpkg/minissh/internal/model"
 
 // Result is the outcome of parsing an external host list.
 type Result struct {

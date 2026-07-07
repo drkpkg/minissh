@@ -11,10 +11,10 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"github.com/danieluremix/minissh/internal/importer"
-	"github.com/danieluremix/minissh/internal/keychain"
-	"github.com/danieluremix/minissh/internal/model"
-	"github.com/danieluremix/minissh/internal/store"
+	"github.com/drkpkg/minissh/internal/importer"
+	"github.com/drkpkg/minissh/internal/keychain"
+	"github.com/drkpkg/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/store"
 )
 
 // Options configures how a Result gets persisted.

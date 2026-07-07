@@ -8,10 +8,10 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/danieluremix/minissh/internal/importer"
-	"github.com/danieluremix/minissh/internal/model"
-	"github.com/danieluremix/minissh/internal/sources"
-	"github.com/danieluremix/minissh/internal/store"
+	"github.com/drkpkg/minissh/internal/importer"
+	"github.com/drkpkg/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/sources"
+	"github.com/drkpkg/minissh/internal/store"
 )
 
 func keyRune(r rune) tea.KeyMsg {

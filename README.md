@@ -6,7 +6,7 @@ dashboard (groups / hosts / details) in the style of
 [k9s](https://github.com/derailed/k9s), [GitUI](https://github.com/extrawurst/gitui),
 and [btop](https://github.com/aristocratos/btop).
 
-![CI](https://github.com/danieluremix/minissh/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/drkpkg/minissh/actions/workflows/ci.yml/badge.svg)
 
 ## Features
 
@@ -34,11 +34,11 @@ and [btop](https://github.com/aristocratos/btop).
 ## Installation
 
 ```sh
-go install github.com/danieluremix/minissh/cmd/minissh@latest
+go install github.com/drkpkg/minissh/cmd/minissh@latest
 ```
 
 Or download a prebuilt binary from the
-[releases page](https://github.com/danieluremix/minissh/releases).
+[releases page](https://github.com/drkpkg/minissh/releases).
 
 Requires the system `ssh` client to be installed and on your `PATH` — minissh
 shells out to it rather than reimplementing the SSH protocol, so your
@@ -101,7 +101,7 @@ panel currently has focus.
 ## Building from source
 
 ```sh
-git clone https://github.com/danieluremix/minissh.git
+git clone https://github.com/drkpkg/minissh.git
 cd minissh
 go build -o minissh ./cmd/minissh
 ```

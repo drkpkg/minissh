@@ -8,8 +8,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/danieluremix/minissh/internal/importer"
-	"github.com/danieluremix/minissh/internal/termius"
+	"github.com/drkpkg/minissh/internal/importer"
+	"github.com/drkpkg/minissh/internal/termius"
 )
 
 // Source describes one importable source of hosts.

@@ -10,8 +10,8 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/danieluremix/minissh/internal/keychain"
-	"github.com/danieluremix/minissh/internal/model"
+	"github.com/drkpkg/minissh/internal/keychain"
+	"github.com/drkpkg/minissh/internal/model"
 )
 
 // Args builds the argument vector (excluding argv[0]) to pass to the ssh
