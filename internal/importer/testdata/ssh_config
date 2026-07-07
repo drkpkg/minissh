@@ -1,0 +1,16 @@
+# comment line, should be ignored
+Host *
+    ServerAliveInterval 60
+
+Host web-1
+    HostName 10.0.0.1
+    User root
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519
+
+Host bastion-*
+    User jump
+
+Host db-1
+    HostName 10.0.0.2
+    User admin

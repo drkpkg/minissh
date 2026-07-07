@@ -1,0 +1,6 @@
+Label,Address,Protocol,Port,Group,Subgroup,Tags,Username,Password,Key
+web-1,10.0.0.1,SSH,22,prod,web,"edge,api",root,,/home/user/.ssh/id_ed25519
+db-1,10.0.0.2,ssh,2222,prod,db,db,admin,hunter2,
+legacy-ftp,10.0.0.3,FTP,21,,,,,,
+,10.0.0.4,ssh,,,,,root,,
+no-address-row,,ssh,,,,,,,

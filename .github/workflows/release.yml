@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Build release artifacts
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          platforms=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+            "windows/arm64"
+          )
+
+          for platform in "${platforms[@]}"; do
+            GOOS="${platform%/*}"
+            GOARCH="${platform#*/}"
+            BINARY="minissh"
+            ARCHIVE="minissh_${VERSION}_${GOOS}_${GOARCH}"
+            STAGING="dist/${ARCHIVE}"
+
+            if [ "$GOOS" = "windows" ]; then
+              BINARY="minissh.exe"
+            fi
+
+            mkdir -p "$STAGING"
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build \
+              -ldflags="-s -w -X main.version=${VERSION}" \
+              -o "${STAGING}/${BINARY}" \
+              ./cmd/minissh
+
+            if [ "$GOOS" = "windows" ]; then
+              (cd "$STAGING" && zip -q "../${ARCHIVE}.zip" "$BINARY")
+            else
+              tar -czf "dist/${ARCHIVE}.tar.gz" -C "$STAGING" "$BINARY"
+            fi
+          done
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+          generate_release_notes: true

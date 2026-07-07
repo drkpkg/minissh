@@ -1,0 +1,37 @@
+# Binaries
+/minissh
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries and coverage
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# Go workspace
+go.work
+go.work.sum
+
+# Build output
+/bin/
+/dist/
+/build/
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local config and secrets (user data lives under XDG_CONFIG_HOME)
+.env
+.env.*
