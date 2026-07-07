@@ -3,7 +3,11 @@
 // Windows) rather than in minissh's plaintext hosts.json.
 package keychain
 
-import "github.com/zalando/go-keyring"
+import (
+	"errors"
+
+	"github.com/zalando/go-keyring"
+)
 
 const service = "minissh"
 
@@ -18,7 +22,7 @@ func SetPassword(hostID, password string) error {
 // fall back to an interactive prompt without special-casing "not found".
 func GetPassword(hostID string) (string, error) {
 	pw, err := keyring.Get(service, hostID)
-	if err == keyring.ErrNotFound {
+	if errors.Is(err, keyring.ErrNotFound) {
 		return "", nil
 	}
 	return pw, err
@@ -27,7 +31,7 @@ func GetPassword(hostID string) (string, error) {
 // DeletePassword removes the stored password for the given host ID, if any.
 func DeletePassword(hostID string) error {
 	err := keyring.Delete(service, hostID)
-	if err == keyring.ErrNotFound {
+	if errors.Is(err, keyring.ErrNotFound) {
 		return nil
 	}
 	return err

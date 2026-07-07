@@ -13,7 +13,7 @@ func TestImportCSVFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open fixture: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	res, err := ImportCSV(f)
 	if err != nil {

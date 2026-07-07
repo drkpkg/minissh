@@ -11,7 +11,7 @@ func TestProbeOpenPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	addr := ln.Addr().(*net.TCPAddr)
 	if !Probe(addr.IP.String(), addr.Port, time.Second) {
@@ -25,7 +25,7 @@ func TestProbeClosedPort(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := ln.Addr().(*net.TCPAddr)
-	ln.Close() // free the port so the dial gets refused
+	_ = ln.Close() // free the port so the dial gets refused
 
 	if Probe(addr.IP.String(), addr.Port, time.Second) {
 		t.Fatal("expected Probe to fail against a closed port")

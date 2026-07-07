@@ -1,3 +1,4 @@
+// Package tui implements the interactive terminal UI for minissh.
 package tui
 
 import (
@@ -867,7 +868,7 @@ func (m appModel) confirmView() string {
 		if h.Username != "" {
 			target = h.Username + "@" + target
 		}
-		b.WriteString(fmt.Sprintf("  %-20s %-30s port %d\n", h.Label, target, h.Port))
+		fmt.Fprintf(&b, "  %-20s %-30s port %d\n", h.Label, target, h.Port)
 	}
 	if len(res.Skipped) > 0 {
 		b.WriteString("\n")

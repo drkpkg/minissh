@@ -7,8 +7,11 @@ import "time"
 type IdentityKind string
 
 const (
-	IdentityAgent    IdentityKind = "agent"
-	IdentityKey      IdentityKind = "key"
+	// IdentityAgent uses the SSH agent for authentication.
+	IdentityAgent IdentityKind = "agent"
+	// IdentityKey uses a private key file for authentication.
+	IdentityKey IdentityKind = "key"
+	// IdentityPassword uses a password stored in the OS keychain.
 	IdentityPassword IdentityKind = "password"
 )
 

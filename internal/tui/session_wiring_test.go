@@ -35,7 +35,7 @@ func TestEnterStartsEmbeddedSession(t *testing.T) {
 	if mm.activeSession == nil {
 		t.Fatal("expected activeSession to be set")
 	}
-	defer mm.activeSession.Close()
+	defer func() { _ = mm.activeSession.Close() }()
 	if cmd == nil {
 		t.Fatal("expected a non-nil cmd (waitSessionDone + redraw tick)")
 	}
@@ -56,7 +56,7 @@ func TestStartEmbeddedSessionRecordsLastConnected(t *testing.T) {
 
 	updated, _ := m.startEmbeddedSession(h)
 	mm := updated.(appModel)
-	defer mm.activeSession.Close()
+	defer func() { _ = mm.activeSession.Close() }()
 
 	loaded, err := store.Load()
 	if err != nil {
@@ -109,7 +109,7 @@ func TestActiveSessionCapturesInputInsteadOfQuitting(t *testing.T) {
 
 	updated, _ := m.startEmbeddedSession(h)
 	mm := updated.(appModel)
-	defer mm.activeSession.Close()
+	defer func() { _ = mm.activeSession.Close() }()
 
 	// Regression: while a session is active, "q" must be forwarded to the
 	// remote session (it might be a legitimate remote command), not
@@ -132,7 +132,7 @@ func TestUpdateActiveSessionDoesNotPanicOnUnrecognizedKey(t *testing.T) {
 
 	updated, _ := m.startEmbeddedSession(h)
 	mm := updated.(appModel)
-	defer mm.activeSession.Close()
+	defer func() { _ = mm.activeSession.Close() }()
 
 	_, cmd := mm.updateActiveSession(tea.KeyMsg{Type: tea.KeyF20})
 	if cmd != nil {
@@ -186,7 +186,7 @@ func TestSessionRedrawMsgReschedulesWhileActive(t *testing.T) {
 	m.applySizes()
 	updated, _ := m.startEmbeddedSession(h)
 	mm := updated.(appModel)
-	defer mm.activeSession.Close()
+	defer func() { _ = mm.activeSession.Close() }()
 
 	_, cmd := mm.Update(sessionRedrawMsg{})
 	if cmd == nil {
@@ -201,7 +201,7 @@ func TestMainViewRendersActiveSessionHeader(t *testing.T) {
 	m.applySizes()
 	updated, _ := m.startEmbeddedSession(h)
 	mm := updated.(appModel)
-	defer mm.activeSession.Close()
+	defer func() { _ = mm.activeSession.Close() }()
 
 	view := mm.mainView()
 	if !strings.Contains(view, "SESSION") || !strings.Contains(view, h.Label) {
@@ -216,7 +216,7 @@ func TestApplySizesResizesActiveSessionWithoutError(t *testing.T) {
 	m.applySizes()
 	updated, _ := m.startEmbeddedSession(h)
 	mm := updated.(appModel)
-	defer mm.activeSession.Close()
+	defer func() { _ = mm.activeSession.Close() }()
 
 	mm.width, mm.height = 120, 40
 	mm.applySizes() // must not panic with an active session present

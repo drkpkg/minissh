@@ -78,7 +78,7 @@ func TestCellStyleLipglossStyleAppliesExplicitColor(t *testing.T) {
 
 func TestRenderShowsPlainText(t *testing.T) {
 	term := vt10x.New(vt10x.WithSize(10, 2))
-	term.Write([]byte("hello"))
+	_, _ = term.Write([]byte("hello"))
 
 	s := &Session{term: term}
 	out := s.Render(10, 2)
@@ -93,7 +93,7 @@ func TestRenderShowsPlainText(t *testing.T) {
 
 func TestRenderAppliesANSIColor(t *testing.T) {
 	term := vt10x.New(vt10x.WithSize(10, 1))
-	term.Write([]byte("\x1b[31mred\x1b[0m"))
+	_, _ = term.Write([]byte("\x1b[31mred\x1b[0m"))
 
 	s := &Session{term: term}
 	out := s.Render(10, 1)
@@ -122,7 +122,7 @@ func TestStartCmdRunsCommandAndCapturesOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startCmd: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	select {
 	case <-s.Done():
@@ -144,7 +144,7 @@ func TestStartCmdWriteSendsInputToProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startCmd: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if _, err := s.Write([]byte("ping\r")); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -166,7 +166,7 @@ func TestStartCmdResizeUpdatesTerminalSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startCmd: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if err := s.Resize(40, 10); err != nil {
 		t.Fatalf("Resize: %v", err)
@@ -201,7 +201,7 @@ func TestStartCmdDefaultsInvalidSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startCmd: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	cols, rows := s.term.Size()
 	if cols != 80 || rows != 24 {

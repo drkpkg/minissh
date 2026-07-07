@@ -24,7 +24,7 @@ func importTermiusCmd() *cobra.Command {
 			"OS keychain entry — nothing is sent anywhere, and nothing is written\n" +
 			"until you confirm.",
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			src, _ := sources.ByID("termius-live")
 			res, err := src.Run("")
 			if err != nil {

@@ -108,7 +108,17 @@ func (s *Session) Resize(cols, rows int) error {
 		return nil
 	}
 	s.term.Resize(cols, rows)
-	return pty.Setsize(s.ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	return pty.Setsize(s.ptmx, &pty.Winsize{Rows: clampU16(rows), Cols: clampU16(cols)})
+}
+
+func clampU16(v int) uint16 {
+	if v < 0 {
+		return 0
+	}
+	if v > 65535 {
+		return 65535
+	}
+	return uint16(v)
 }
 
 // Done is closed once the session has ended — the remote closed the

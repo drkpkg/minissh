@@ -88,7 +88,7 @@ func walkJSON(node interface{}, parentGroupID string, tmpStore *model.Store, res
 		}
 
 		if addr, ok := stringField(lower, jsonAddressKeys); ok && addr != "" {
-			importJSONHost(lower, addr, parentGroupID, tmpStore, res)
+			importJSONHost(lower, addr, parentGroupID, res)
 			return
 		}
 
@@ -109,7 +109,7 @@ func walkJSON(node interface{}, parentGroupID string, tmpStore *model.Store, res
 	}
 }
 
-func importJSONHost(lower map[string]interface{}, address, groupID string, tmpStore *model.Store, res *Result) {
+func importJSONHost(lower map[string]interface{}, address, groupID string, res *Result) {
 	if proto, ok := stringField(lower, jsonProtocolKeys); ok && proto != "" && !strings.EqualFold(proto, "ssh") {
 		res.Skipped = append(res.Skipped, fmt.Sprintf("host %s: non-ssh protocol %q", address, proto))
 		return

@@ -14,7 +14,7 @@ func TestProbeHostCmdReportsOnline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	addr := ln.Addr().(*net.TCPAddr)
 
 	cmd := probeHostCmd(model.Host{ID: "h1", Address: addr.IP.String(), Port: addr.Port})

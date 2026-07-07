@@ -16,6 +16,6 @@ func Probe(address string, port int, timeout time.Duration) bool {
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true
 }

@@ -253,7 +253,7 @@ func (f hostForm) toHost() (model.Host, string, error) {
 		identity = model.Identity{Kind: model.IdentityKey, KeyPath: kp}
 	case authPassword:
 		pw := f.inputs[fieldSecret].Value()
-		if pw == "" && !(f.editing && f.originalAuthPassword) {
+		if pw == "" && (!f.editing || !f.originalAuthPassword) {
 			return model.Host{}, "", fmt.Errorf("password is required for password auth")
 		}
 		identity = model.Identity{Kind: model.IdentityPassword}
@@ -357,7 +357,7 @@ func deleteConfirmView(host model.Host) string {
 	var b strings.Builder
 	b.WriteString(errorStyle.Render("Delete host?"))
 	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("%s (%s) will be permanently removed.", host.Label, host.Address))
+	fmt.Fprintf(&b, "%s (%s) will be permanently removed.", host.Label, host.Address)
 	b.WriteString("\n\n")
 	b.WriteString(hintLine([][2]string{{"y", "confirm"}, {"any other key", "cancel"}}))
 	return boxStyle.Render(b.String())

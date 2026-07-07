@@ -83,13 +83,13 @@ func TestScanEncryptedBlocksDedupesAndFiltersExtensions(t *testing.T) {
 	logContent = append(logContent, block...)
 	logContent = append(logContent, " more-noise "...)
 	logContent = append(logContent, block...)
-	if err := os.WriteFile(filepath.Join(dir, "000001.log"), logContent, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "000001.log"), logContent, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "000002.ldb"), block, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "000002.ldb"), block, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "CURRENT"), block, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "CURRENT"), block, 0o600); err != nil {
 		t.Fatal(err)
 	}
 

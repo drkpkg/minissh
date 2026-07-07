@@ -103,7 +103,7 @@ func vaultKeyLinuxFallback() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer svc.Close(session)
+	defer func() { _ = svc.Close(session) }()
 
 	if err := svc.Unlock(results[0]); err != nil {
 		return "", err
@@ -123,7 +123,7 @@ func Import() (*importer.Result, error) {
 		return nil, err
 	}
 	if _, err := os.Stat(dir); err != nil {
-		return nil, fmt.Errorf("Termius database not found at %s: %w", dir, err)
+		return nil, fmt.Errorf("termius database not found at %s: %w", dir, err)
 	}
 
 	key, err := vaultKey()

@@ -33,7 +33,7 @@ func rootCmd() *cobra.Command {
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			return runTUI()
 		},
 	}
@@ -60,7 +60,7 @@ func importCmd() *cobra.Command {
 		Use:   "import <file>",
 		Short: "Import hosts from a Termius CSV/JSON export or an ssh_config file",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			id := format
 			if id == "" {
 				id = detectFormat(args[0])
@@ -125,7 +125,7 @@ func lsCmd() *cobra.Command {
 		Use:   "ls",
 		Short: "List all known hosts",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			s, err := store.Load()
 			if err != nil {
 				return err
@@ -153,7 +153,7 @@ func addCmd() *cobra.Command {
 		Use:   "add <label>",
 		Short: "Add a host manually",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			label := args[0]
 			if address == "" {
 				return fmt.Errorf("--address is required")
@@ -240,7 +240,7 @@ func rmCmd() *cobra.Command {
 		Use:   "rm <label>",
 		Short: "Remove a host",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			s, err := store.Load()
 			if err != nil {
 				return err
@@ -258,7 +258,7 @@ func connectCmd() *cobra.Command {
 		Use:   "connect <label>",
 		Short: "Connect directly to a host by label, without the picker",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			s, err := store.Load()
 			if err != nil {
 				return err

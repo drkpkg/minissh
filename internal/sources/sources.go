@@ -72,7 +72,7 @@ func runFile(parse func(io.Reader) (*importer.Result, error)) func(string) (*imp
 		if err != nil {
 			return nil, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		return parse(f)
 	}
 }

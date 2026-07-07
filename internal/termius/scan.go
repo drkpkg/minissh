@@ -27,7 +27,7 @@ func scanEncryptedBlocks(dir string) ([][]byte, error) {
 	var all []byte
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || !(strings.HasSuffix(name, ".log") || strings.HasSuffix(name, ".ldb")) {
+		if e.IsDir() || (!strings.HasSuffix(name, ".log") && !strings.HasSuffix(name, ".ldb")) {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(dir, name))

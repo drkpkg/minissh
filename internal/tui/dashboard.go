@@ -58,10 +58,10 @@ func dashboardSection(title string, hosts []model.Host, line func(model.Host) st
 		b.WriteString("\n\n")
 		return b.String()
 	}
-	const max = 5
+	const previewLimit = 5
 	for i, h := range hosts {
-		if i >= max {
-			b.WriteString(subtleStyle.Render(fmt.Sprintf("  ...and %d more", len(hosts)-max)))
+		if i >= previewLimit {
+			b.WriteString(subtleStyle.Render(fmt.Sprintf("  ...and %d more", len(hosts)-previewLimit)))
 			b.WriteString("\n")
 			break
 		}

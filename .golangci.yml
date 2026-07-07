@@ -1,0 +1,34 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - misspell
+    - gosec
+    - revive
+    - errorlint
+
+  settings:
+    gosec:
+      # Launching ssh/sshpass is the application's core behavior.
+      excludes:
+        - G204
+    revive:
+      rules:
+        - name: redefines-builtin-id
+          severity: warning
+
+  exclusions:
+    rules:
+      # User-provided import paths and local config/Termius DB reads are intentional.
+      - path: internal/(sources|store|termius)/
+        text: "G304"
+        linters:
+          - gosec
+
+run:
+  timeout: 5m
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

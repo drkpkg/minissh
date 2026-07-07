@@ -8,10 +8,8 @@ import "github.com/charmbracelet/lipgloss"
 // Colors communicate meaning, not decoration — no per-tag/per-group
 // rainbow coloring anywhere in this app.
 var (
-	colorAccent    = lipgloss.AdaptiveColor{Light: "#1D4ED8", Dark: "#60A5FA"} // blue
-	colorSecondary = lipgloss.AdaptiveColor{Light: "#0891B2", Dark: "#22D3EE"} // cyan
-	colorSuccess   = lipgloss.AdaptiveColor{Light: "#15803D", Dark: "#4ADE80"} // green
-	colorWarning   = lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FBBF24"} // amber
+	colorAccent  = lipgloss.AdaptiveColor{Light: "#1D4ED8", Dark: "#60A5FA"} // blue
+	colorWarning = lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FBBF24"} // amber
 	colorError     = lipgloss.AdaptiveColor{Light: "#B91C1C", Dark: "#F87171"} // red, used sparingly
 	colorMuted     = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#9CA3AF"} // subtle gray
 	colorBorder    = lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#3F3F46"}
@@ -35,20 +33,9 @@ var (
 	warningStyle = lipgloss.NewStyle().
 			Foreground(colorWarning)
 
-	successStyle = lipgloss.NewStyle().
-			Foreground(colorSuccess)
-
-	infoStyle = lipgloss.NewStyle().
-			Foreground(colorSecondary)
-
 	keyStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(colorAccent)
-
-	groupHeaderStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(colorMuted).
-				PaddingLeft(2)
 
 	boxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -68,9 +55,7 @@ var (
 				Foreground(lipgloss.Color("#FFFFFF")).
 				Background(colorBorder)
 
-	statusOnlineStyle  = successStyle
-	statusOfflineStyle = subtleStyle
-	favoriteStyle      = warningStyle
+	favoriteStyle = warningStyle
 )
 
 // panelHeaderStyle returns the section-header style for a panel, brighter

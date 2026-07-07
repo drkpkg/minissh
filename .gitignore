@@ -20,6 +20,7 @@ go.work.sum
 /bin/
 /dist/
 /build/
+.cache/
 
 # IDE and editors
 .idea/
