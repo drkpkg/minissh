@@ -2,7 +2,9 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/drkpkg/minissh/internal/connect"
+	"github.com/drkpkg/minissh/internal/connlog"
 	"github.com/drkpkg/minissh/internal/importer"
 	"github.com/drkpkg/minissh/internal/importflow"
 	"github.com/drkpkg/minissh/internal/keychain"
@@ -43,6 +46,7 @@ const (
 	overlayConfirm
 	overlayAddEdit
 	overlayDeleteConfirm
+	overlayConnectError
 )
 
 type appModel struct {
@@ -89,6 +93,7 @@ type appModel struct {
 
 	hostForm     hostForm
 	deleteTarget *model.Host
+	connectErr   *connectErrorInfo
 
 	sourceList list.Model
 	filePrompt textinput.Model
@@ -149,6 +154,19 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s, err := store.Load(); err == nil {
 			m.refreshFromStore(s)
 		}
+		duration := time.Since(tm.started)
+		_ = connlog.Append(connlog.Outcome{
+			Host: tm.host, Mode: "fullscreen", Started: tm.started,
+			Duration: duration, ExitCode: exitCodeFromErr(tm.err), Err: tm.err,
+		})
+		// Same false-positive guard as the embedded path (see
+		// connectFailureThreshold): a long, otherwise-normal session that
+		// happens to end on a non-zero last-command status must not pop an
+		// error modal — only a fast failure does.
+		if tm.err != nil && duration < connectFailureThreshold {
+			m.connectErr = &connectErrorInfo{host: tm.host, err: tm.err}
+			m.overlay = overlayConnectError
+		}
 		return m, nil
 	case sessionEndedMsg:
 		return m.handleSessionEnded(tm.hostID)
@@ -175,6 +193,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateAddEdit(msg)
 		case overlayDeleteConfirm:
 			return m.updateDeleteConfirm(msg)
+		case overlayConnectError:
+			return m.updateConnectError(msg)
 		}
 	}
 
@@ -378,7 +398,7 @@ func (m appModel) updateHostsFocus(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "x":
 			if h, ok := m.hosts.Selected(); ok {
-				m.closeSessionForHost(h.ID)
+				return m.closeSessionForHost(h.ID)
 			}
 			return m, nil
 		}
@@ -510,6 +530,15 @@ func (m appModel) updateDeleteConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateConnectError dismisses the connect-error modal on any keypress.
+func (m appModel) updateConnectError(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(tea.KeyMsg); ok {
+		m.overlay = overlayNone
+		m.connectErr = nil
+	}
+	return m, nil
+}
+
 func (m appModel) confirmDelete() (tea.Model, tea.Cmd) {
 	if m.deleteTarget == nil {
 		m.overlay = overlayNone
@@ -548,7 +577,37 @@ func (m *appModel) refreshFromStore(s *model.Store) {
 
 // connectFinishedMsg is delivered once the suspended ssh session (started
 // by connectTo) exits and bubbletea has restored the terminal to minissh.
-type connectFinishedMsg struct{ err error }
+type connectFinishedMsg struct {
+	host    model.Host
+	started time.Time
+	err     error
+}
+
+// connectErrorInfo is the content of the dismissible overlayConnectError
+// modal — populated whenever a connection attempt (embedded fallback or
+// full-screen) fails outright rather than the process ever actually
+// running (e.g. the ssh binary isn't on PATH) or fails fast with a
+// non-zero exit (see connectFailureThreshold).
+type connectErrorInfo struct {
+	host model.Host
+	err  error
+}
+
+// exitCodeFromErr extracts a process exit status from the error
+// tea.ExecProcess's callback delivers (os/exec.Cmd.Run's error, which for
+// any non-zero exit is an *exec.ExitError) — 0 for a nil error, -1 if the
+// status can't be determined (e.g. the process was killed by a signal, or
+// it never started at all).
+func exitCodeFromErr(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
 
 // sessionRedrawInterval is how often the HOSTS panel repaints while an
 // embedded SSH session is focused, picking up whatever the remote side has
@@ -582,13 +641,38 @@ func waitSessionDone(hostID string, s *sshsession.Session) tea.Cmd {
 }
 
 // liveSessionHostIDs returns the set of host IDs with a currently-running
-// session, for the host table's live-session marker.
+// (not yet ended) session, for the host table's live-session marker.
 func (m appModel) liveSessionHostIDs() map[string]bool {
 	ids := make(map[string]bool, len(m.sessions))
 	for _, ls := range m.sessions {
-		ids[ls.host.ID] = true
+		if !ls.ended {
+			ids[ls.host.ID] = true
+		}
 	}
 	return ids
+}
+
+// endedSessionHostIDs returns the set of host IDs whose session ended
+// abnormally and is frozen awaiting dismissal, for the host table's
+// failed-session marker.
+func (m appModel) endedSessionHostIDs() map[string]bool {
+	ids := make(map[string]bool, len(m.sessions))
+	for _, ls := range m.sessions {
+		if ls.ended {
+			ids[ls.host.ID] = true
+		}
+	}
+	return ids
+}
+
+// sessionIndex returns the index of hostID's session in m.sessions, or -1.
+func (m appModel) sessionIndex(hostID string) int {
+	for i, ls := range m.sessions {
+		if ls.host.ID == hostID {
+			return i
+		}
+	}
+	return -1
 }
 
 // startEmbeddedSession focuses h's session in the HOSTS panel (see
@@ -600,13 +684,11 @@ func (m appModel) liveSessionHostIDs() map[string]bool {
 // simpler and already proven, so it's the safety net if embedding ever
 // doesn't work for a given host or environment.
 func (m appModel) startEmbeddedSession(h model.Host) (tea.Model, tea.Cmd) {
-	for i, ls := range m.sessions {
-		if ls.host.ID == h.ID {
-			m.currentSessionIdx = i
-			m.inSessionMode = true
-			m.applySizes() // in case the panel resized while this session was backgrounded
-			return m, nil
-		}
+	if i := m.sessionIndex(h.ID); i != -1 {
+		m.currentSessionIdx = i
+		m.inSessionMode = true
+		m.applySizes() // in case the panel resized while this session was backgrounded
+		return m, nil
 	}
 
 	sess, err := sshsession.Start(h, m.hostsWidth, m.hostsContentHeight)
@@ -643,18 +725,24 @@ func (m *appModel) cycleSession(delta int) {
 	_ = m.sessions[m.currentSessionIdx].sess.Resize(m.hostsWidth, m.hostsContentHeight)
 }
 
-// closeSessionForHost kills hostID's session, if any, without touching
-// m.sessions directly — the resulting sessionEndedMsg (delivered through
-// the same waitSessionDone every session ends through) is the single place
-// list membership actually changes, whether a session ends because the
-// remote hung up or because the user asked to close it here.
-func (m appModel) closeSessionForHost(hostID string) {
-	for _, ls := range m.sessions {
-		if ls.host.ID == hostID {
-			_ = ls.sess.Close()
-			return
-		}
+// closeSessionForHost ends hostID's session, if any. A still-running
+// session is killed via Close (which marks it ClosedByUser, so
+// handleSessionEnded never mistakes this for a connection failure) and
+// removed asynchronously once the resulting sessionEndedMsg arrives — the
+// single place list membership actually changes for a live session,
+// whether it ends because the remote hung up or because the user asked to
+// close it here. An already-ended (frozen, failed) session has no more
+// async completion coming, so it's removed directly instead.
+func (m appModel) closeSessionForHost(hostID string) (tea.Model, tea.Cmd) {
+	i := m.sessionIndex(hostID)
+	if i == -1 {
+		return m, nil
 	}
+	if m.sessions[i].ended {
+		return m.removeSession(hostID)
+	}
+	_ = m.sessions[i].sess.Close()
+	return m, nil
 }
 
 // updateActiveSession handles the reserved tab-switch/detach combos, then
@@ -685,29 +773,76 @@ func (m appModel) updateActiveSession(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.currentSessionIdx < len(m.sessions) {
+			cur := m.sessions[m.currentSessionIdx]
+			if cur.ended {
+				// The pty is already dead — there's nothing left to forward
+				// to, and no more input is expected once a session has
+				// frozen on failure; any other key just dismisses it.
+				return m.removeSession(cur.host.ID)
+			}
 			if b := keyToBytes(km); b != nil {
-				_, _ = m.sessions[m.currentSessionIdx].sess.Write(b)
+				_, _ = cur.sess.Write(b)
 			}
 		}
 	}
 	return m, nil
 }
 
-// handleSessionEnded removes hostID's session from m.sessions — whatever
-// ended it — and, if it was the tab on screen, moves focus to whichever
-// session slid into its place, or back to the host table if none are left.
-// Reloads the store either way so anything changed while connected (the
-// just-recorded LastConnectedAt, etc.) shows up.
+// connectFailureThreshold is how quickly a session has to end (with a
+// non-zero exit, and not because minissh itself closed it) to be treated
+// as a connection failure rather than a normal disconnect. A real failure
+// (bad auth, refused, unreachable) fails in well under a second; a real
+// interactive session runs for a while — a long session that happens to
+// end on a non-zero last-command status must not be flagged as a failure.
+const connectFailureThreshold = 3 * time.Second
+
+// handleSessionEnded logs hostID's outcome and decides what happens to its
+// tab now that the process is done. A clean disconnect (or one minissh
+// itself caused, via the "x" key or app quit) is removed immediately, same
+// as before. A fast, non-zero exit nobody asked for — the signature of a
+// real connection failure — freezes the tab instead: its final screen
+// (with ssh's own error text already on it) stays visible with a banner
+// until the user dismisses it, rather than vanishing before it can be
+// read.
 func (m appModel) handleSessionEnded(hostID string) (tea.Model, tea.Cmd) {
-	idx := -1
-	for i, ls := range m.sessions {
-		if ls.host.ID == hostID {
-			idx = i
-			break
-		}
-	}
+	idx := m.sessionIndex(hostID)
 	if idx == -1 {
 		return m, nil // already removed (e.g. a duplicate/late done signal)
+	}
+	ls := m.sessions[idx]
+
+	if !ls.sess.ClosedByUser() {
+		if res, ok := ls.sess.Result(); ok {
+			_ = connlog.Append(connlog.Outcome{
+				Host: ls.host, Mode: "embedded", Started: res.Started,
+				Duration: res.Duration, ExitCode: res.ExitCode, Err: res.WaitErr,
+			})
+			if res.ExitCode != 0 && res.Duration < connectFailureThreshold {
+				m.sessions[idx].ended = true
+				m.sessions[idx].exitCode = res.ExitCode
+				m.sessions[idx].waitErr = res.WaitErr
+				m.hosts.SetLiveSessions(m.liveSessionHostIDs())
+				m.hosts.SetEndedSessions(m.endedSessionHostIDs())
+				if s, err := store.Load(); err == nil {
+					m.refreshFromStore(s)
+				}
+				return m, nil
+			}
+		}
+	}
+	return m.removeSession(hostID)
+}
+
+// removeSession drops hostID's session from m.sessions and, if it was the
+// tab on screen, moves focus to whichever session slid into its place, or
+// back to the host table if none are left. Reloads the store either way so
+// anything changed while connected (the just-recorded LastConnectedAt,
+// etc.) shows up. Shared by a clean session end and dismissing a frozen
+// (failed) one.
+func (m appModel) removeSession(hostID string) (tea.Model, tea.Cmd) {
+	idx := m.sessionIndex(hostID)
+	if idx == -1 {
+		return m, nil
 	}
 	m.sessions = append(m.sessions[:idx], m.sessions[idx+1:]...)
 
@@ -727,6 +862,7 @@ func (m appModel) handleSessionEnded(hostID string) (tea.Model, tea.Cmd) {
 	m.applySizes()
 
 	m.hosts.SetLiveSessions(m.liveSessionHostIDs())
+	m.hosts.SetEndedSessions(m.endedSessionHostIDs())
 	if s, err := store.Load(); err == nil {
 		m.refreshFromStore(s)
 	}
@@ -742,6 +878,12 @@ func (m appModel) handleSessionEnded(hostID string) (tea.Model, tea.Cmd) {
 func (m appModel) connectTo(h model.Host) (tea.Model, tea.Cmd) {
 	cmd, err := connect.Command(h)
 	if err != nil {
+		// The process never even ran (e.g. no ssh binary on PATH) — this
+		// used to fail silently; now it's logged and surfaced the same way
+		// a fast in-flight failure is.
+		_ = connlog.Append(connlog.Outcome{Host: h, Mode: "fullscreen", Started: time.Now(), ExitCode: -1, Err: err})
+		m.connectErr = &connectErrorInfo{host: h, err: err}
+		m.overlay = overlayConnectError
 		return m, nil
 	}
 
@@ -754,8 +896,9 @@ func (m appModel) connectTo(h model.Host) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	started := time.Now()
 	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-		return connectFinishedMsg{err: err}
+		return connectFinishedMsg{host: h, started: started, err: err}
 	})
 }
 
@@ -911,6 +1054,11 @@ func (m appModel) View() string {
 			return renderModal(m.width, m.height, deleteConfirmView(*m.deleteTarget))
 		}
 		return m.mainView()
+	case overlayConnectError:
+		if m.connectErr != nil {
+			return renderModal(m.width, m.height, connectErrorView(*m.connectErr))
+		}
+		return m.mainView()
 	default:
 		return m.mainView()
 	}
@@ -941,7 +1089,16 @@ func (m appModel) mainView() string {
 		// full-screen; "E" is only a pre-connect choice.
 		cur := m.sessions[m.currentSessionIdx]
 		header := panelHeaderStyle(true).Render(fmt.Sprintf("SESSION — %s", cur.host.Label))
-		hostsContent = header + "\n" + cur.sess.Render(m.hostsWidth, m.hostsContentHeight)
+		if cur.ended {
+			// One extra line for the banner — must come out of the render
+			// height budget, not be added on top of it (the tab strip made
+			// exactly this mistake once already: an unbudgeted extra line
+			// just gets silently clipped in a terminal that's already full).
+			banner := errorStyle.Render(fmt.Sprintf("Session ended (exit %d) — press any key to close", cur.exitCode))
+			hostsContent = header + "\n" + banner + "\n" + cur.sess.Render(m.hostsWidth, m.hostsContentHeight-1)
+		} else {
+			hostsContent = header + "\n" + cur.sess.Render(m.hostsWidth, m.hostsContentHeight)
+		}
 	case m.homeView:
 		header := panelHeaderStyle(m.focus == focusHosts).Render("DASHBOARD")
 		hostsContent = header + "\n" + dashboardView(m.allHosts, m.allGroups, m.statuses)

@@ -13,11 +13,13 @@
 package sshsession
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/creack/pty"
@@ -36,13 +38,27 @@ const (
 // Session is one live SSH session running in a pty, parsed into a virtual
 // terminal screen that Render paints into a bounded area on demand.
 type Session struct {
-	term vt10x.Terminal
-	ptmx *os.File
-	cmd  *exec.Cmd
+	term      vt10x.Terminal
+	ptmx      *os.File
+	cmd       *exec.Cmd
+	startedAt time.Time
 
-	mu   sync.Mutex
-	done chan struct{}
-	err  error
+	mu           sync.Mutex
+	done         chan struct{}
+	err          error // pty read error (usually io.EOF/an I/O error once the pty closes)
+	endedAt      time.Time
+	waitErr      error // result of cmd.Wait(), nil on a clean (status 0) exit
+	exitCode     int   // -1 if unknown (e.g. killed by a signal, or Wait itself failed)
+	closedByUser bool  // true once Close has been called on this session
+}
+
+// Result is a Session's outcome, available once Done is closed.
+type Result struct {
+	ExitCode     int
+	WaitErr      error
+	ClosedByUser bool
+	Started      time.Time
+	Duration     time.Duration
 }
 
 // Start launches ssh for h in a new pty sized cols x rows.
@@ -72,7 +88,7 @@ func startCmd(cmd *exec.Cmd, cols, rows int) (*Session, error) {
 		return nil, err
 	}
 
-	s := &Session{term: term, ptmx: ptmx, cmd: cmd, done: make(chan struct{})}
+	s := &Session{term: term, ptmx: ptmx, cmd: cmd, startedAt: time.Now(), done: make(chan struct{})}
 	go s.readLoop()
 	return s, nil
 }
@@ -85,13 +101,35 @@ func (s *Session) readLoop() {
 			_, _ = s.term.Write(buf[:n])
 		}
 		if err != nil {
+			// The pty closing means the process is done or about to be —
+			// Wait() reaps it (avoiding a zombie left behind for as long as
+			// minissh keeps running) and is the only way to learn the real
+			// exit status; the pty read error itself carries none.
+			waitErr := s.cmd.Wait()
 			s.mu.Lock()
 			s.err = err
+			s.endedAt = time.Now()
+			s.waitErr = waitErr
+			s.exitCode = exitCodeFromWaitErr(waitErr)
 			s.mu.Unlock()
 			close(s.done)
 			return
 		}
 	}
+}
+
+// exitCodeFromWaitErr extracts the process exit status from cmd.Wait()'s
+// return value: 0 on a clean exit, -1 if the process was killed by a
+// signal (as Close does) or the status couldn't otherwise be determined.
+func exitCodeFromWaitErr(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
 }
 
 // Write sends raw bytes (already translated from a key event) to the
@@ -134,13 +172,67 @@ func (s *Session) Err() error {
 	return s.err
 }
 
+// Result reports s's outcome — ok is false until Done is closed.
+func (s *Session) Result() (Result, bool) {
+	select {
+	case <-s.done:
+	default:
+		return Result{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return Result{
+		ExitCode:     s.exitCode,
+		WaitErr:      s.waitErr,
+		ClosedByUser: s.closedByUser,
+		Started:      s.startedAt,
+		Duration:     s.endedAt.Sub(s.startedAt),
+	}, true
+}
+
+// ClosedByUser reports whether Close has been called on this session —
+// safe to call at any time, independent of whether the session has
+// actually finished exiting yet (unlike Result, which needs Done closed).
+func (s *Session) ClosedByUser() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closedByUser
+}
+
 // Close releases the pty and, if it's still running, kills the ssh
-// process.
+// process. Marks the session as user-closed so callers can distinguish an
+// intentional close from the process dying on its own.
 func (s *Session) Close() error {
+	s.mu.Lock()
+	s.closedByUser = true
+	s.mu.Unlock()
 	if s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
 	return s.ptmx.Close()
+}
+
+// cursorBlinkInterval matches the ~530ms on/off cadence most real terminal
+// emulators use for a blinking block cursor.
+const cursorBlinkInterval = 530 * time.Millisecond
+
+// cursorBlinkOn reports whether the cursor is currently in the "on"
+// (visible/inverted) phase of its blink cycle. A real terminal blinks its
+// own hardware cursor for free; here the cursor is painted into the
+// rendered text itself (see Render), so blinking has to be driven
+// explicitly. This is a pure function of wall-clock time — no extra state
+// to track — which works because Render is already called on every
+// sessionRedrawTick (30ms in internal/tui), far finer than the blink
+// period, so consecutive frames actually alternate.
+func cursorBlinkOn() bool {
+	return blinkOnAt(time.Now())
+}
+
+// blinkOnAt is cursorBlinkOn's logic factored out to take an explicit
+// time, so the toggling itself is testable without depending on when the
+// test happens to run.
+func blinkOnAt(t time.Time) bool {
+	return t.UnixMilli()/cursorBlinkInterval.Milliseconds()%2 == 0
 }
 
 // Render paints the current virtual screen as a lipgloss-styled string
@@ -152,7 +244,7 @@ func (s *Session) Render(width, height int) string {
 
 	cols, rows := s.term.Size()
 	cx, cy := -1, -1
-	if s.term.CursorVisible() {
+	if s.term.CursorVisible() && cursorBlinkOn() {
 		cur := s.term.Cursor()
 		cx, cy = cur.X, cur.Y
 	}

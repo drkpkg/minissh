@@ -110,6 +110,25 @@ func TestSshpassCommandOmitsPromptOverrideForPassword(t *testing.T) {
 	}
 }
 
+func TestSshpassCommandAcceptsUnknownHostKeys(t *testing.T) {
+	// sshpass can't answer ssh's interactive host-key prompt (it exits 6,
+	// "host public key is unknown", when nobody's there to type "yes") —
+	// accept-new closes that hole for a first connection.
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "ssh")
+	writeFakeExecutable(t, dir, "sshpass")
+	t.Setenv("PATH", dir)
+
+	_, argv, ok := sshpassCommand("hunter2", "", model.Host{Address: "10.0.0.1"})
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "-o StrictHostKeyChecking=accept-new") {
+		t.Fatalf("expected -o StrictHostKeyChecking=accept-new in argv, got %v", argv)
+	}
+}
+
 func TestSshpassCommandFallsBackWhenSshpassMissing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // empty: neither sshpass nor ssh present
 	_, _, ok := sshpassCommand("hunter2", "", model.Host{Address: "10.0.0.1"})

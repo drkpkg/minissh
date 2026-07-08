@@ -20,8 +20,9 @@ linters:
 
   exclusions:
     rules:
-      # User-provided import paths and local config/Termius DB reads are intentional.
-      - path: internal/(sources|store|termius)/
+      # User-provided import paths and local config/Termius DB/connection-log
+      # reads are intentional.
+      - path: internal/(sources|store|termius|connlog)/
         text: "G304"
         linters:
           - gosec
@@ -33,8 +34,14 @@ linters:
         linters:
           - gosec
       # Fake executables on PATH for exec.LookPath in tests need the exec bit.
-      - path: internal/connect/connect_test\.go
+      - path: internal/(connect/connect|tui/session_wiring)_test\.go
         text: "G306"
+        linters:
+          - gosec
+      # Tests reading back a log file at a path this package itself wrote
+      # to (under a per-test XDG_CONFIG_HOME) — not user input.
+      - path: internal/tui/(modal|session_wiring)_test\.go
+        text: "G304"
         linters:
           - gosec
 

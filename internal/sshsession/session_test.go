@@ -74,6 +74,22 @@ func TestCellStyleLipglossStyleAppliesExplicitColor(t *testing.T) {
 	}
 }
 
+func TestBlinkOnAtTogglesEveryInterval(t *testing.T) {
+	base := time.UnixMilli(0)
+	if !blinkOnAt(base) {
+		t.Fatal("expected blink on at the start of a cycle")
+	}
+	if blinkOnAt(base.Add(cursorBlinkInterval)) {
+		t.Fatal("expected blink off one interval later")
+	}
+	if !blinkOnAt(base.Add(2 * cursorBlinkInterval)) {
+		t.Fatal("expected blink on again two intervals later")
+	}
+	if !blinkOnAt(base.Add(cursorBlinkInterval / 2)) {
+		t.Fatal("expected still on partway through the first interval")
+	}
+}
+
 // --- rendering against a real vt10x.Terminal, no pty needed -----------------
 
 func TestRenderShowsPlainText(t *testing.T) {
@@ -192,6 +208,78 @@ func TestStartCmdCloseKillsRunningProcess(t *testing.T) {
 	case <-s.Done():
 	case <-time.After(3 * time.Second):
 		t.Fatal("expected Done() to close after Close() kills the process")
+	}
+}
+
+func TestStartCmdReapsProcessAndCapturesExitCode(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "exit 7")
+	s, err := startCmd(cmd, 20, 5)
+	if err != nil {
+		t.Fatalf("startCmd: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	select {
+	case <-s.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the command to finish")
+	}
+
+	if cmd.ProcessState == nil {
+		t.Fatal("expected cmd.Wait() to have been called (ProcessState set) — otherwise the process is left a zombie")
+	}
+	res, ok := s.Result()
+	if !ok {
+		t.Fatal("expected Result() to be ready once Done is closed")
+	}
+	if res.ExitCode != 7 {
+		t.Fatalf("expected exit code 7, got %d", res.ExitCode)
+	}
+	if res.ClosedByUser {
+		t.Fatal("expected ClosedByUser false — this session ended on its own, not via Close")
+	}
+	if res.Duration <= 0 {
+		t.Fatalf("expected a positive duration, got %v", res.Duration)
+	}
+}
+
+func TestResultNotOkBeforeSessionEnds(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	s, err := startCmd(cmd, 20, 5)
+	if err != nil {
+		t.Fatalf("startCmd: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	if _, ok := s.Result(); ok {
+		t.Fatal("expected Result() not ok while the session is still running")
+	}
+}
+
+func TestClosedByUserReflectsExplicitClose(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	s, err := startCmd(cmd, 20, 5)
+	if err != nil {
+		t.Fatalf("startCmd: %v", err)
+	}
+	if s.ClosedByUser() {
+		t.Fatal("expected ClosedByUser false before Close is called")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !s.ClosedByUser() {
+		t.Fatal("expected ClosedByUser true immediately after Close, even before Done fires")
+	}
+
+	select {
+	case <-s.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Done")
+	}
+	res, ok := s.Result()
+	if !ok || !res.ClosedByUser {
+		t.Fatalf("expected Result().ClosedByUser true, got ok=%v res=%+v", ok, res)
 	}
 }
 

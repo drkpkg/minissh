@@ -1,14 +1,44 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/drkpkg/minissh/internal/connlog"
 	"github.com/drkpkg/minissh/internal/model"
 	"github.com/drkpkg/minissh/internal/store"
 )
+
+// fakeFailingSSH puts an executable "ssh" on PATH that exits immediately
+// with exitCode — real ssh against a non-routable address doesn't
+// necessarily fail fast (it can hang until a TCP timeout, which varies by
+// network), so exercising the fast-non-zero-exit freeze heuristic needs a
+// command that's actually deterministic.
+func fakeFailingSSH(t *testing.T, exitCode int) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\nexit " + strconv.Itoa(exitCode) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
+		t.Fatalf("writing fake ssh: %v", err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+// waitDone blocks until s.Done() fires or fails the test after timeout.
+func waitDone(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the session to end")
+	}
+}
 
 // testHostForSession is a syntactically valid but guaranteed-non-routable
 // address (RFC 5737 TEST-NET-1, same technique already used in
@@ -168,6 +198,12 @@ func TestSessionEndedMsgClearsActiveSessionAndReloadsStore(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
+	// Close it first so ClosedByUser is true: handleSessionEnded must take
+	// the clean-removal path here regardless of the (real, still in-flight
+	// against a non-routable address) process's own eventual exit code —
+	// this test is about the store-reload/removal wiring, not the
+	// freeze-on-failure heuristic.
+	_ = mm.sessions[0].sess.Close()
 	updated, _ = mm.Update(sessionEndedMsg{hostID: h.ID})
 	mm2 := updated.(appModel)
 	if len(mm2.sessions) != 0 {
@@ -200,7 +236,10 @@ func TestSessionEndedMsgForBackgroundSessionLeavesCurrentUndisturbed(t *testing.
 		t.Fatalf("expected h2's session focused after starting it, got idx=%d", mm.currentSessionIdx)
 	}
 
-	// h1's (background) session ends — h2 must remain focused.
+	// h1's (background) session ends — h2 must remain focused. Closed
+	// explicitly first (see the ClosedByUser comment in the test above) so
+	// this exercises the removal/refocus wiring, not the freeze heuristic.
+	_ = mm.sessions[0].sess.Close()
 	updated, _ = mm.Update(sessionEndedMsg{hostID: h1.ID})
 	mm2 := updated.(appModel)
 	if len(mm2.sessions) != 1 {
@@ -432,5 +471,132 @@ func TestCloseSessionForHostClosesTheRightOne(t *testing.T) {
 	mm2 := updated.(appModel)
 	if len(mm2.sessions) != 1 || mm2.sessions[0].host.ID != h2.ID {
 		t.Fatalf("expected only h2's session remaining, got %+v", mm2.sessions)
+	}
+}
+
+// --- failure freeze/dismiss --------------------------------------------------
+
+func TestFastNonZeroExitFreezesSession(t *testing.T) {
+	fakeFailingSSH(t, 1)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	h := testHostForSession()
+
+	m := newAppModel([]model.Host{h}, nil)
+	m.applySizes()
+	updated, _ := m.startEmbeddedSession(h)
+	mm := updated.(appModel)
+	waitDone(t, mm.sessions[0].sess.Done())
+
+	updated, _ = mm.Update(sessionEndedMsg{hostID: h.ID})
+	mm2 := updated.(appModel)
+
+	if len(mm2.sessions) != 1 {
+		t.Fatalf("expected the session to stay in the list (frozen, not removed), got %d", len(mm2.sessions))
+	}
+	if !mm2.sessions[0].ended {
+		t.Fatal("expected the session marked ended")
+	}
+	if mm2.sessions[0].exitCode != 1 {
+		t.Fatalf("expected exit code 1 recorded, got %d", mm2.sessions[0].exitCode)
+	}
+	if !mm2.inSessionMode {
+		t.Fatal("expected to stay attached to the frozen session, not auto-detach")
+	}
+
+	path, _ := connlog.Path()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading connlog: %v", err)
+	}
+	if !strings.Contains(string(data), "result=failed") || !strings.Contains(string(data), "exit=1") {
+		t.Fatalf("expected a failed/exit=1 connlog entry, got %q", string(data))
+	}
+}
+
+func TestMainViewShowsFreezeBannerForEndedSession(t *testing.T) {
+	fakeFailingSSH(t, 1)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	h := testHostForSession()
+
+	m := newAppModel([]model.Host{h}, nil)
+	m.applySizes()
+	updated, _ := m.startEmbeddedSession(h)
+	mm := updated.(appModel)
+	waitDone(t, mm.sessions[0].sess.Done())
+	updated, _ = mm.Update(sessionEndedMsg{hostID: h.ID})
+	mm2 := updated.(appModel)
+
+	view := mm2.mainView()
+	if !strings.Contains(view, "Session ended") || !strings.Contains(view, "exit 1") {
+		t.Fatalf("expected the view to show a freeze banner mentioning the exit code, got:\n%s", view)
+	}
+}
+
+func TestDismissingFrozenSessionRemovesIt(t *testing.T) {
+	fakeFailingSSH(t, 1)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	h := testHostForSession()
+
+	m := newAppModel([]model.Host{h}, nil)
+	m.applySizes()
+	updated, _ := m.startEmbeddedSession(h)
+	mm := updated.(appModel)
+	waitDone(t, mm.sessions[0].sess.Done())
+	updated, _ = mm.Update(sessionEndedMsg{hostID: h.ID})
+	mm2 := updated.(appModel)
+	if !mm2.sessions[0].ended {
+		t.Fatal("expected the session frozen before dismissing it")
+	}
+
+	updated, _ = mm2.updateActiveSession(keyRune('x')) // any key dismisses a frozen session
+	mm3 := updated.(appModel)
+	if len(mm3.sessions) != 0 {
+		t.Fatalf("expected the frozen session removed on dismiss, got %d remaining", len(mm3.sessions))
+	}
+}
+
+func TestClosedByUserNeverFreezesEvenOnNonZeroExit(t *testing.T) {
+	fakeFailingSSH(t, 1)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	h := testHostForSession()
+
+	m := newAppModel([]model.Host{h}, nil)
+	m.applySizes()
+	updated, _ := m.startEmbeddedSession(h)
+	mm := updated.(appModel)
+
+	// Close it ourselves (as the "x" key does) before it has a chance to
+	// exit on its own — ClosedByUser must take priority over the exit code.
+	updated, _ = mm.closeSessionForHost(h.ID)
+	mm2 := updated.(appModel)
+	waitDone(t, mm2.sessions[0].sess.Done())
+
+	updated, _ = mm2.Update(sessionEndedMsg{hostID: h.ID})
+	mm3 := updated.(appModel)
+	if len(mm3.sessions) != 0 {
+		t.Fatalf("expected a user-closed session removed cleanly regardless of exit code, got %d remaining", len(mm3.sessions))
+	}
+}
+
+func TestHostTableMarksEndedSessionDistinctlyFromLive(t *testing.T) {
+	fakeFailingSSH(t, 1)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	h1, h2 := testHostForSession(), testHostForSession2()
+
+	m := newAppModel([]model.Host{h1, h2}, nil)
+	m.applySizes()
+	updated, _ := m.startEmbeddedSession(h1)
+	mm := updated.(appModel)
+	waitDone(t, mm.sessions[0].sess.Done())
+	updated, _ = mm.Update(sessionEndedMsg{hostID: h1.ID})
+	mm2 := updated.(appModel)
+
+	live := mm2.liveSessionHostIDs()
+	ended := mm2.endedSessionHostIDs()
+	if live[h1.ID] {
+		t.Fatal("expected a frozen (ended) session to not count as live")
+	}
+	if !ended[h1.ID] {
+		t.Fatal("expected h1 in the ended-session set")
 	}
 }

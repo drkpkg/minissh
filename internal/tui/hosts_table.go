@@ -46,8 +46,11 @@ type hostsTable struct {
 	// liveSessions is the set of host IDs with a currently-running embedded
 	// session (foreground or backgrounded) — see SetLiveSessions.
 	liveSessions map[string]bool
-	sortCol      sortColumn
-	sortAsc      bool
+	// endedSessions is the set of host IDs whose session ended abnormally
+	// and is frozen awaiting dismissal — see SetEndedSessions.
+	endedSessions map[string]bool
+	sortCol       sortColumn
+	sortAsc       bool
 	// preserveOrder skips the sortCol-driven sort — set while a search
 	// query is active, so fuzzy-match relevance order (best match first)
 	// isn't immediately undone by re-sorting alphabetically.
@@ -130,6 +133,15 @@ func (h *hostsTable) SetLiveSessions(hostIDs map[string]bool) {
 	h.refresh()
 }
 
+// SetEndedSessions updates which hosts have a session that ended
+// abnormally and is frozen awaiting dismissal, marking them in the NAME
+// column so a failure is visible from the dashboard without opening the
+// tab.
+func (h *hostsTable) SetEndedSessions(hostIDs map[string]bool) {
+	h.endedSessions = hostIDs
+	h.refresh()
+}
+
 func (h *hostsTable) CycleSort() {
 	h.sortCol = (h.sortCol + 1) % sortColumnCount
 	h.sortAsc = true
@@ -150,7 +162,7 @@ func (h *hostsTable) refresh() {
 	rows := make([]table.Row, len(h.hosts))
 	for i, hst := range h.hosts {
 		rows[i] = table.Row{
-			sessionMarkedLabel(h.liveSessions, hst),
+			sessionMarkedLabel(h.liveSessions, h.endedSessions, hst),
 			hostAddressColumn(hst),
 			hst.Username,
 			statusBadge(h.statuses, hst.ID),
@@ -273,11 +285,16 @@ func favoriteBadge(fav bool) string {
 }
 
 // sessionMarkedLabel prefixes h's label with a marker glyph when it has a
-// live embedded session (foreground or backgrounded) — plain text for the
-// same truncation reason as statusBadge.
-func sessionMarkedLabel(liveSessions map[string]bool, h model.Host) string {
-	if liveSessions[h.ID] {
+// live embedded session (foreground or backgrounded) or one that ended
+// abnormally and is awaiting dismissal — plain text for the same
+// truncation reason as statusBadge.
+func sessionMarkedLabel(liveSessions, endedSessions map[string]bool, h model.Host) string {
+	switch {
+	case endedSessions[h.ID]:
+		return "✗ " + h.Label
+	case liveSessions[h.ID]:
 		return "▶ " + h.Label
+	default:
+		return h.Label
 	}
-	return h.Label
 }

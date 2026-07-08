@@ -405,3 +405,21 @@ func deleteConfirmView(host model.Host) string {
 	b.WriteString(hintLine([][2]string{{"y", "confirm"}, {"any other key", "cancel"}}))
 	return boxStyle.Render(b.String())
 }
+
+// connectErrorView shows a connection failure that would otherwise have
+// gone unnoticed — either the ssh binary/command couldn't even be built,
+// or the full-screen ssh process exited fast with a non-zero status (see
+// connectFailureThreshold). It also gets logged to connlog regardless of
+// whether this view is ever shown.
+func connectErrorView(info connectErrorInfo) string {
+	var b strings.Builder
+	b.WriteString(errorStyle.Render("Connection failed: " + info.host.Label))
+	b.WriteString("\n\n")
+	fmt.Fprintf(&b, "%s (%s)\n\n", info.host.Label, info.host.Address)
+	if info.err != nil {
+		b.WriteString(info.err.Error())
+		b.WriteString("\n\n")
+	}
+	b.WriteString(hintLine([][2]string{{"any key", "dismiss"}}))
+	return boxStyle.Render(b.String())
+}

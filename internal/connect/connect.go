@@ -115,6 +115,13 @@ func sshpassCommand(secret, prompt string, h model.Host) (bin string, argv []str
 	if prompt != "" {
 		head = append(head, "-P", prompt)
 	}
-	head = append(head, "-p", secret, sshBin)
+	// sshpass can't answer ssh's interactive "are you sure you want to
+	// continue connecting" prompt for a host whose key isn't in
+	// known_hosts yet — with nobody there to type "yes", it just bails
+	// (sshpass exit code 6) instead of connecting. accept-new closes that
+	// hole for a first connection while still hard-rejecting a key that's
+	// since *changed* (the actual MITM protection) — unlike the unsafe
+	// StrictHostKeyChecking=no, which would silently accept that too.
+	head = append(head, "-p", secret, sshBin, "-o", "StrictHostKeyChecking=accept-new")
 	return sshpassBin, append(head, Args(h)...), true
 }

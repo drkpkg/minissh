@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/drkpkg/minissh/internal/connlog"
 	"github.com/drkpkg/minissh/internal/model"
 	"github.com/drkpkg/minissh/internal/store"
 )
@@ -487,6 +490,70 @@ func TestDeleteConfirmViewMentionsHost(t *testing.T) {
 }
 
 // --- render smoke -----------------------------------------------------------
+
+func TestConnectErrorViewMentionsHostAndError(t *testing.T) {
+	info := connectErrorInfo{
+		host: model.Host{Label: "web-1", Address: "10.0.0.1"},
+		err:  errors.New("ssh: connect to host 10.0.0.1 port 22: Connection refused"),
+	}
+	view := connectErrorView(info)
+	if !strings.Contains(view, "web-1") || !strings.Contains(view, "10.0.0.1") {
+		t.Fatalf("expected view to mention host label/address, got: %s", view)
+	}
+	if !strings.Contains(view, "Connection refused") {
+		t.Fatalf("expected view to mention the error text, got: %s", view)
+	}
+}
+
+// --- connectTo immediate-failure surfacing -----------------------------------
+
+func TestConnectToShowsErrorModalWhenSSHUnavailable(t *testing.T) {
+	// Point PATH at an empty directory so connect.Command fails
+	// deterministically (no ssh binary), the same technique the session
+	// wiring tests already use.
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	h := model.Host{ID: "h1", Label: "web-1", Address: "10.0.0.1"}
+	m := newAppModel([]model.Host{h}, nil)
+	m.applySizes()
+
+	updated, cmd := m.connectTo(h)
+	mm := updated.(appModel)
+	if mm.overlay != overlayConnectError {
+		t.Fatalf("expected overlayConnectError, got %v", mm.overlay)
+	}
+	if mm.connectErr == nil {
+		t.Fatal("expected connectErr set")
+	}
+	if cmd != nil {
+		t.Fatal("expected no cmd: the process never even started")
+	}
+
+	path, _ := connlog.Path()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading connlog: %v", err)
+	}
+	if !strings.Contains(string(data), "mode=fullscreen") || !strings.Contains(string(data), "result=failed") {
+		t.Fatalf("expected a fullscreen/failed connlog entry, got %q", string(data))
+	}
+}
+
+func TestAnyKeyDismissesConnectErrorModal(t *testing.T) {
+	m := newAppModel(nil, nil)
+	m.overlay = overlayConnectError
+	m.connectErr = &connectErrorInfo{host: model.Host{Label: "web-1"}, err: errors.New("boom")}
+
+	updated, _ := m.Update(keyRune('x'))
+	mm := updated.(appModel)
+	if mm.overlay != overlayNone {
+		t.Fatalf("expected overlayNone after dismissing, got %v", mm.overlay)
+	}
+	if mm.connectErr != nil {
+		t.Fatal("expected connectErr cleared after dismissing")
+	}
+}
 
 func TestRenderModalCentersWithinCanvas(t *testing.T) {
 	out := renderModal(40, 10, "hi")
