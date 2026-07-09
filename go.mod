@@ -41,3 +41,6 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )
+
+// Local fork adding scrollback history support; see third_party/vt10x/doc.go.
+replace github.com/hinshun/vt10x => ./third_party/vt10x

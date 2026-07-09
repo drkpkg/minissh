@@ -357,7 +357,7 @@ func TestSecondSessionKeepsFirstAlive(t *testing.T) {
 	}
 }
 
-func TestCtrlRightLeftCyclesSessions(t *testing.T) {
+func TestCtrlPgDownUpCyclesSessions(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	h1, h2 := testHostForSession(), testHostForSession2()
 	m := newAppModel([]model.Host{h1, h2}, nil)
@@ -377,27 +377,27 @@ func TestCtrlRightLeftCyclesSessions(t *testing.T) {
 		t.Fatalf("expected h2 focused after starting it, got idx %d", mm.currentSessionIdx)
 	}
 
-	updated, _ = mm.updateActiveSession(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	updated, _ = mm.updateActiveSession(tea.KeyMsg{Type: tea.KeyCtrlPgDown})
 	mm = updated.(appModel)
 	if mm.currentSessionIdx != 0 {
-		t.Fatalf("expected ctrl+right to wrap to idx 0, got %d", mm.currentSessionIdx)
+		t.Fatalf("expected ctrl+pgdown to wrap to idx 0, got %d", mm.currentSessionIdx)
 	}
 
-	updated, _ = mm.updateActiveSession(tea.KeyMsg{Type: tea.KeyCtrlLeft})
+	updated, _ = mm.updateActiveSession(tea.KeyMsg{Type: tea.KeyCtrlPgUp})
 	mm = updated.(appModel)
 	if mm.currentSessionIdx != 1 {
-		t.Fatalf("expected ctrl+left to wrap back to idx 1, got %d", mm.currentSessionIdx)
+		t.Fatalf("expected ctrl+pgup to wrap back to idx 1, got %d", mm.currentSessionIdx)
 	}
 }
 
-// TestCtrlRightLeftCyclesSessionsWithAltFlaggedVariant is a regression test:
-// some terminals encode ctrl+arrow as ESC[1;7C/D (xterm's ctrl+alt modifier
-// code) or urxvt's ESC[Oc/Od rather than the plain ESC[1;5C/D bubbletea
-// otherwise expects. bubbletea still parses these as
-// KeyCtrlRight/KeyCtrlLeft, but with Alt set — matching on km.String()
-// (which then reads "alt+ctrl+right") missed this and silently forwarded
-// the escape to the remote session instead of switching tabs.
-func TestCtrlRightLeftCyclesSessionsWithAltFlaggedVariant(t *testing.T) {
+// TestCtrlPgDownUpCyclesSessionsWithAltFlaggedVariant is a regression test:
+// some terminals encode ctrl+pgup/pgdn with the Alt bit set (mirroring the
+// same ctrl+alt-flagged variant xterm/urxvt send for ctrl+arrow). bubbletea
+// still parses these as KeyCtrlPgDown/KeyCtrlPgUp, but with Alt set —
+// matching on km.String() (which then reads "alt+ctrl+pgdown") would miss
+// this and silently forward the escape to the remote session instead of
+// switching tabs.
+func TestCtrlPgDownUpCyclesSessionsWithAltFlaggedVariant(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	h1, h2 := testHostForSession(), testHostForSession2()
 	m := newAppModel([]model.Host{h1, h2}, nil)
@@ -413,10 +413,10 @@ func TestCtrlRightLeftCyclesSessionsWithAltFlaggedVariant(t *testing.T) {
 		}
 	}()
 
-	updated, _ = mm.updateActiveSession(tea.KeyMsg{Type: tea.KeyCtrlRight, Alt: true})
+	updated, _ = mm.updateActiveSession(tea.KeyMsg{Type: tea.KeyCtrlPgDown, Alt: true})
 	mm = updated.(appModel)
 	if mm.currentSessionIdx != 0 {
-		t.Fatalf("expected alt-flagged ctrl+right to still cycle tabs, got idx %d", mm.currentSessionIdx)
+		t.Fatalf("expected alt-flagged ctrl+pgdown to still cycle tabs, got idx %d", mm.currentSessionIdx)
 	}
 }
 
@@ -442,6 +442,37 @@ func TestCtrlBackslashDetachesWithoutClosing(t *testing.T) {
 	case <-mm2.sessions[0].sess.Done():
 		t.Fatal("expected the session to still be alive after detaching, not closed")
 	default:
+	}
+}
+
+// TestPgUpDoesNotForwardBytesOnPrimaryScreen is a routing-level check: a
+// plain (non-alt-screen) session must intercept PgUp locally for
+// scrollback rather than forwarding it into the pty. The deeper
+// scroll/history semantics are covered directly against sshsession.Session
+// in internal/sshsession — this only guards the app.go decision of which
+// path a key takes.
+func TestPgUpDoesNotForwardBytesOnPrimaryScreen(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	h := testHostForSession()
+	m := newAppModel([]model.Host{h}, nil)
+	m.applySizes()
+
+	updated, _ := m.startEmbeddedSession(h)
+	mm := updated.(appModel)
+	defer func() { _ = mm.sessions[0].sess.Close() }()
+
+	cur := mm.sessions[mm.currentSessionIdx]
+	if cur.sess.InAltScreen() {
+		t.Fatal("expected a freshly started session to be on the primary screen")
+	}
+
+	updated, cmd := mm.updateActiveSession(tea.KeyMsg{Type: tea.KeyPgUp})
+	if cmd != nil {
+		t.Fatal("expected PgUp on the primary screen to return no command (handled locally)")
+	}
+	mm2 := updated.(appModel)
+	if len(mm2.sessions) != 1 {
+		t.Fatal("expected PgUp not to close or otherwise disturb the session")
 	}
 }
 

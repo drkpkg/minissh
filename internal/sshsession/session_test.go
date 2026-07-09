@@ -129,7 +129,7 @@ func TestRenderShowsPlainText(t *testing.T) {
 	_, _ = term.Write([]byte("hello"))
 
 	s := &Session{term: term}
-	out := s.Render(10, 2)
+	out := s.Render(10, 2, nil)
 	lines := strings.Split(out, "\n")
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 lines, got %d", len(lines))
@@ -144,7 +144,7 @@ func TestRenderAppliesANSIColor(t *testing.T) {
 	_, _ = term.Write([]byte("\x1b[31mred\x1b[0m"))
 
 	s := &Session{term: term}
-	out := s.Render(10, 1)
+	out := s.Render(10, 1, nil)
 	if !strings.Contains(out, "red") {
 		t.Fatalf("expected rendered text to contain 'red', got %q", out)
 	}
@@ -156,7 +156,7 @@ func TestRenderAppliesANSIColor(t *testing.T) {
 func TestRenderPadsShorterThanRequestedHeight(t *testing.T) {
 	term := vt10x.New(vt10x.WithSize(10, 2))
 	s := &Session{term: term}
-	out := s.Render(10, 5) // taller than the pty's 2 rows
+	out := s.Render(10, 5, nil) // taller than the pty's 2 rows
 	if got := strings.Count(out, "\n"); got != 4 {
 		t.Fatalf("expected 5 lines (4 newlines), got %d newlines in %q", got, out)
 	}
@@ -178,7 +178,7 @@ func TestStartCmdRunsCommandAndCapturesOutput(t *testing.T) {
 		t.Fatal("timed out waiting for the command to finish")
 	}
 
-	out := s.Render(20, 5)
+	out := s.Render(20, 5, nil)
 	if !strings.Contains(out, "hello") {
 		t.Fatalf("expected rendered output to contain 'hello', got %q", out)
 	}
@@ -200,12 +200,12 @@ func TestStartCmdWriteSendsInputToProcess(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Contains(s.Render(20, 5), "ping") {
+		if strings.Contains(s.Render(20, 5, nil), "ping") {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("expected echoed input 'ping' to appear in the rendered output, got %q", s.Render(20, 5))
+	t.Fatalf("expected echoed input 'ping' to appear in the rendered output, got %q", s.Render(20, 5, nil))
 }
 
 func TestStartCmdResizeUpdatesTerminalSize(t *testing.T) {
@@ -312,6 +312,174 @@ func TestClosedByUserReflectsExplicitClose(t *testing.T) {
 	res, ok := s.Result()
 	if !ok || !res.ClosedByUser {
 		t.Fatalf("expected Result().ClosedByUser true, got ok=%v res=%+v", ok, res)
+	}
+}
+
+// --- selection ----------------------------------------------------------
+
+func TestSelectedTextSingleRow(t *testing.T) {
+	term := vt10x.New(vt10x.WithSize(10, 1))
+	_, _ = term.Write([]byte("hello"))
+	s := &Session{term: term}
+
+	// "hello" occupies columns 0-4; select columns 1-3 ("ell").
+	sel := Selection{StartX: 1, StartY: 0, EndX: 3, EndY: 0}
+	got := s.SelectedText(sel, 10, 1)
+	if got != "ell" {
+		t.Fatalf("SelectedText = %q, want %q", got, "ell")
+	}
+}
+
+func TestSelectedTextMultiRowTrimsTrailingSpaces(t *testing.T) {
+	term := vt10x.New(vt10x.WithSize(10, 2))
+	_, _ = term.Write([]byte("one\r\ntwo"))
+	s := &Session{term: term}
+
+	// From column 1 of row 0 through column 1 of row 1: "ne" then "tw".
+	sel := Selection{StartX: 1, StartY: 0, EndX: 1, EndY: 1}
+	got := s.SelectedText(sel, 10, 2)
+	if got != "ne\ntw" {
+		t.Fatalf("SelectedText = %q, want %q", got, "ne\ntw")
+	}
+}
+
+func TestSelectedTextFromScrolledBackView(t *testing.T) {
+	term := vt10x.New(vt10x.WithSize(10, 2))
+	_, _ = term.Write([]byte("one\r\ntwo\r\nthree\r\nfour\r\n"))
+	s := &Session{term: term}
+
+	s.ScrollUp(2) // view now shows history rows "two", "three" (see TestScrollUpRevealsHistoryAboveLiveScreen)
+	sel := Selection{StartX: 0, StartY: 0, EndX: 2, EndY: 0}
+	got := s.SelectedText(sel, 10, 2)
+	if got != "two" {
+		t.Fatalf("SelectedText from a scrolled-back view = %q, want %q", got, "two")
+	}
+}
+
+func TestRenderHighlightsSelectionAsReverseVideo(t *testing.T) {
+	term := vt10x.New(vt10x.WithSize(10, 1))
+	_, _ = term.Write([]byte("hello"))
+	s := &Session{term: term}
+
+	plain := s.Render(10, 1, nil)
+	sel := &Selection{StartX: 0, StartY: 0, EndX: 4, EndY: 0}
+	highlighted := s.Render(10, 1, sel)
+	if plain == highlighted {
+		t.Fatal("expected a selection to change the rendered output (reverse video)")
+	}
+	if !strings.Contains(highlighted, "\x1b[") {
+		t.Fatalf("expected an ANSI escape in the selection-highlighted output, got %q", highlighted)
+	}
+}
+
+func TestSelectionRowRangeClampsToRowBounds(t *testing.T) {
+	sel := Selection{StartX: 5, StartY: 0, EndX: 2, EndY: 2}
+	if _, _, ok := sel.rowRange(-1, 10); ok {
+		t.Fatal("expected no range above the selection's start row")
+	}
+	if _, _, ok := sel.rowRange(3, 10); ok {
+		t.Fatal("expected no range below the selection's end row")
+	}
+	if x0, x1, ok := sel.rowRange(0, 10); !ok || x0 != 5 || x1 != 10 {
+		t.Fatalf("start row range = (%d, %d, %v), want (5, 10, true)", x0, x1, ok)
+	}
+	if x0, x1, ok := sel.rowRange(1, 10); !ok || x0 != 0 || x1 != 10 {
+		t.Fatalf("middle row range = (%d, %d, %v), want (0, 10, true)", x0, x1, ok)
+	}
+	if x0, x1, ok := sel.rowRange(2, 10); !ok || x0 != 0 || x1 != 3 {
+		t.Fatalf("end row range = (%d, %d, %v), want (0, 3, true)", x0, x1, ok)
+	}
+}
+
+// --- scrollback -------------------------------------------------------
+
+func TestScrollUpRevealsHistoryAboveLiveScreen(t *testing.T) {
+	term := vt10x.New(vt10x.WithSize(10, 2))
+	s := &Session{term: term}
+
+	// Print more lines than fit on screen so the earliest ones scroll into
+	// history; \r\n so each is its own row regardless of wrap behavior.
+	_, _ = term.Write([]byte("one\r\ntwo\r\nthree\r\nfour\r\n"))
+
+	// "one"/"two"/"three" scroll into history in that order, leaving
+	// "four" (and a trailing blank row) live.
+	if got := s.term.HistoryLen(); got != 3 {
+		t.Fatalf("expected 3 rows scrolled into history, got %d", got)
+	}
+
+	s.ScrollUp(2)
+	out := s.Render(10, 2, nil)
+	if strings.Contains(out, "four") {
+		t.Fatalf("expected scrolling up 2 rows to move past the live line entirely, got %q", out)
+	}
+	if !strings.Contains(out, "two") || !strings.Contains(out, "three") {
+		t.Fatalf("expected the view scrolled up 2 rows to show the two preceding history lines, got %q", out)
+	}
+}
+
+func TestScrollDownReturnsTowardLiveOutput(t *testing.T) {
+	term := vt10x.New(vt10x.WithSize(10, 2))
+	s := &Session{term: term}
+	_, _ = term.Write([]byte("one\r\ntwo\r\nthree\r\nfour\r\n"))
+
+	s.ScrollUp(100) // clamps to however much history actually exists
+	if s.ScrollOffset() == 0 {
+		t.Fatal("expected ScrollUp to move off live output")
+	}
+
+	s.ScrollDown(100) // clamps back to 0
+	if s.ScrollOffset() != 0 {
+		t.Fatalf("expected ScrollDown to clamp back to live output, got offset %d", s.ScrollOffset())
+	}
+	out := s.Render(10, 2, nil)
+	if !strings.Contains(out, "four") {
+		t.Fatalf("expected live view restored after scrolling back down, got %q", out)
+	}
+}
+
+func TestScrollResetSnapsToLive(t *testing.T) {
+	term := vt10x.New(vt10x.WithSize(10, 2))
+	s := &Session{term: term}
+	_, _ = term.Write([]byte("one\r\ntwo\r\nthree\r\nfour\r\n"))
+
+	s.ScrollUp(1)
+	if s.ScrollOffset() == 0 {
+		t.Fatal("expected ScrollUp to move off live output")
+	}
+	s.ScrollReset()
+	if s.ScrollOffset() != 0 {
+		t.Fatalf("expected ScrollReset to snap back to 0, got %d", s.ScrollOffset())
+	}
+}
+
+func TestInAltScreenReflectsAlternateBuffer(t *testing.T) {
+	term := vt10x.New(vt10x.WithSize(10, 2))
+	s := &Session{term: term}
+
+	if s.InAltScreen() {
+		t.Fatal("expected primary screen by default")
+	}
+
+	// DECSET 1049: switch to the alternate screen buffer, as full-screen
+	// programs like less/vim/top do on startup.
+	_, _ = term.Write([]byte("\x1b[?1049h"))
+	if !s.InAltScreen() {
+		t.Fatal("expected alt screen after DECSET 1049")
+	}
+
+	_, _ = term.Write([]byte("\x1b[?1049l"))
+	if s.InAltScreen() {
+		t.Fatal("expected primary screen after leaving the alt screen")
+	}
+}
+
+func TestAltScreenScrollingIsNotCapturedAsHistory(t *testing.T) {
+	term := vt10x.New(vt10x.WithSize(10, 2))
+	_, _ = term.Write([]byte("\x1b[?1049h")) // enter alt screen, like less/vim/top
+	_, _ = term.Write([]byte("one\r\ntwo\r\nthree\r\nfour\r\n"))
+
+	if got := term.HistoryLen(); got != 0 {
+		t.Fatalf("expected no scrollback captured while on the alt screen, got %d rows", got)
 	}
 }
 

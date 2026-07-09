@@ -47,5 +47,5 @@ func sessionTabBarView(sessions []liveSession, currentIdx int, inSessionMode boo
 			tabs[i] = subtleStyle.Render(label)
 		}
 	}
-	return strings.Join(tabs, " ") + subtleStyle.Render("  ctrl+←/→ switch · ctrl+\\ detach")
+	return strings.Join(tabs, " ") + subtleStyle.Render("  ctrl+pgup/pgdn switch · ctrl+\\ detach")
 }

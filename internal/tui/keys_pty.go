@@ -27,6 +27,10 @@ func keyToBytes(km tea.KeyMsg) []byte {
 		return []byte("\x1b[C")
 	case tea.KeyLeft:
 		return []byte("\x1b[D")
+	case tea.KeyCtrlRight:
+		return []byte("\x1b[1;5C")
+	case tea.KeyCtrlLeft:
+		return []byte("\x1b[1;5D")
 	case tea.KeyHome:
 		return []byte("\x1b[H")
 	case tea.KeyEnd:

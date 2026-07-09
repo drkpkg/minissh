@@ -44,6 +44,10 @@ linters:
         text: "G304"
         linters:
           - gosec
+    paths:
+      # Vendored fork of github.com/hinshun/vt10x (see third_party/vt10x/doc.go)
+      # — third-party source, not held to this repo's own lint rules.
+      - third_party
 
 run:
   timeout: 5m

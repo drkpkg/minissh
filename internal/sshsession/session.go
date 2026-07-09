@@ -50,6 +50,14 @@ type Session struct {
 	waitErr      error // result of cmd.Wait(), nil on a clean (status 0) exit
 	exitCode     int   // -1 if unknown (e.g. killed by a signal, or Wait itself failed)
 	closedByUser bool  // true once Close has been called on this session
+
+	// scrollOffset is how many rows the rendered view is scrolled back
+	// into history (0 = live). Only ever touched from the UI goroutine
+	// (ScrollUp/Down/Reset, read by Render), the same implicit
+	// single-threaded assumption bubbletea's Update/View already rely on
+	// elsewhere in this codebase — unlike the fields above, it needs no
+	// mutex since readLoop never touches it.
+	scrollOffset int
 }
 
 // Result is a Session's outcome, available once Done is closed.
@@ -149,6 +157,58 @@ func (s *Session) Resize(cols, rows int) error {
 	return pty.Setsize(s.ptmx, &pty.Winsize{Rows: clampU16(rows), Cols: clampU16(cols)})
 }
 
+// ScrollUp moves the rendered view n rows further back into scrollback,
+// clamped to however much history vt10x has actually retained.
+func (s *Session) ScrollUp(n int) {
+	if n <= 0 {
+		return
+	}
+	s.term.Lock()
+	histLen := s.term.HistoryLen()
+	s.term.Unlock()
+	s.scrollOffset += n
+	if s.scrollOffset > histLen {
+		s.scrollOffset = histLen
+	}
+}
+
+// ScrollDown moves the rendered view n rows toward live output, clamped at
+// 0 (fully live).
+func (s *Session) ScrollDown(n int) {
+	if n <= 0 {
+		return
+	}
+	s.scrollOffset -= n
+	if s.scrollOffset < 0 {
+		s.scrollOffset = 0
+	}
+}
+
+// ScrollReset snaps the rendered view back to live output — called when
+// the user types anything other than a scroll key, the same convention
+// most terminal emulators use.
+func (s *Session) ScrollReset() {
+	s.scrollOffset = 0
+}
+
+// ScrollOffset reports how many rows back into scrollback the view
+// currently is (0 = live).
+func (s *Session) ScrollOffset() int {
+	return s.scrollOffset
+}
+
+// InAltScreen reports whether the remote program currently owns the
+// alternate screen buffer (less, vim, top, htop, ...). Those manage their
+// own paging, so PgUp/PgDn should reach them as ordinary input instead of
+// triggering minissh's local scrollback — vt10x never captures history
+// while the alt screen is active in the first place (see the fork's
+// scrollUp), so there'd be nothing to scroll through anyway.
+func (s *Session) InAltScreen() bool {
+	s.term.Lock()
+	defer s.term.Unlock()
+	return s.term.Mode()&vt10x.ModeAltScreen != 0
+}
+
 func clampU16(v int) uint16 {
 	if v < 0 {
 		return 0
@@ -235,16 +295,63 @@ func blinkOnAt(t time.Time) bool {
 	return t.UnixMilli()/cursorBlinkInterval.Milliseconds()%2 == 0
 }
 
+// Selection marks a text-selection range in render-row/column coordinates
+// — the same space Render paints in, i.e. already reflecting whatever
+// ScrollOffset was current when the selection was made. Start must not be
+// after End in reading order (top row first, then left-to-right);
+// internal/tui normalizes mouse-drag anchor/head into this before passing
+// it to Render or SelectedText.
+type Selection struct {
+	StartX, StartY int
+	EndX, EndY     int
+}
+
+// rowRange reports the [x0, x1) column range of row y that sel covers
+// (clamped to width), and whether y is part of the selection at all.
+func (sel Selection) rowRange(y, width int) (x0, x1 int, ok bool) {
+	if y < sel.StartY || y > sel.EndY {
+		return 0, 0, false
+	}
+	x0, x1 = 0, width
+	if y == sel.StartY {
+		x0 = sel.StartX
+	}
+	if y == sel.EndY {
+		x1 = sel.EndX + 1
+	}
+	if x0 < 0 {
+		x0 = 0
+	}
+	if x1 > width {
+		x1 = width
+	}
+	if x0 >= x1 {
+		return 0, 0, false
+	}
+	return x0, x1, true
+}
+
 // Render paints the current virtual screen as a lipgloss-styled string
 // sized exactly width x height (blank-padded if the panel is taller than
-// the pty), so it composes cleanly into a fixed-size panel.
-func (s *Session) Render(width, height int) string {
+// the pty), so it composes cleanly into a fixed-size panel. While
+// scrollOffset > 0, rows above the live screen are painted from vt10x's
+// scrollback history instead — see ScrollUp/ScrollDown. sel, if non-nil,
+// is highlighted the same way the cursor cell is (reverse video).
+func (s *Session) Render(width, height int, sel *Selection) string {
 	s.term.Lock()
 	defer s.term.Unlock()
 
 	cols, rows := s.term.Size()
+	histLen := s.term.HistoryLen()
+	off := s.scrollOffset
+	if off > histLen {
+		off = histLen
+	}
+
 	cx, cy := -1, -1
-	if s.term.CursorVisible() && cursorBlinkOn() {
+	// The cursor only means something on the live screen — hide it while
+	// scrolled back into history, same as every other terminal emulator.
+	if off == 0 && s.term.CursorVisible() && cursorBlinkOn() {
 		cur := s.term.Cursor()
 		cx, cy = cur.X, cur.Y
 	}
@@ -254,12 +361,85 @@ func (s *Session) Render(width, height int) string {
 		if y > 0 {
 			b.WriteByte('\n')
 		}
-		if y >= rows {
-			continue
+		hlX0, hlX1, hl := 0, 0, false
+		if sel != nil {
+			hlX0, hlX1, hl = sel.rowRange(y, width)
 		}
-		b.WriteString(renderRow(s.term, y, min(width, cols), cx, cy))
+		liveY := y - off
+		switch {
+		case liveY < 0:
+			if histIdx := histLen + liveY; histIdx >= 0 {
+				b.WriteString(renderHistoryRow(s.term.HistoryLine(histIdx), width, hlX0, hlX1, hl))
+			}
+		case liveY < rows:
+			b.WriteString(renderRow(s.term, liveY, min(width, cols), cx, cy, hlX0, hlX1, hl))
+		}
 	}
 	return b.String()
+}
+
+// SelectedText returns the plain text sel covers, trimming trailing spaces
+// on each line the way most terminals do when copying a selection. width
+// and height must be the same values last passed to Render, since sel's
+// coordinates are in that render call's row/column space.
+func (s *Session) SelectedText(sel Selection, width, height int) string {
+	s.term.Lock()
+	defer s.term.Unlock()
+
+	cols, rows := s.term.Size()
+	histLen := s.term.HistoryLen()
+	off := s.scrollOffset
+	if off > histLen {
+		off = histLen
+	}
+
+	var lines []string
+	end := sel.EndY
+	if end >= height {
+		end = height - 1
+	}
+	for y := max(sel.StartY, 0); y <= end; y++ {
+		x0, x1, ok := sel.rowRange(y, width)
+		if !ok {
+			continue
+		}
+
+		var glyphs []vt10x.Glyph
+		liveY := y - off
+		switch {
+		case liveY < 0:
+			histIdx := histLen + liveY
+			if histIdx < 0 {
+				continue
+			}
+			glyphs = s.term.HistoryLine(histIdx)
+		case liveY < rows:
+			w := min(width, cols)
+			glyphs = make([]vt10x.Glyph, w)
+			for x := 0; x < w; x++ {
+				glyphs[x] = s.term.Cell(x, liveY)
+			}
+		default:
+			continue
+		}
+		if x1 > len(glyphs) {
+			x1 = len(glyphs)
+		}
+		if x0 >= x1 {
+			continue
+		}
+
+		var line strings.Builder
+		for _, g := range glyphs[x0:x1] {
+			ch := g.Char
+			if ch == 0 {
+				ch = ' '
+			}
+			line.WriteRune(ch)
+		}
+		lines = append(lines, strings.TrimRight(line.String(), " "))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // cellStyle is the plain-comparable subset of a glyph's rendering that
@@ -311,7 +491,36 @@ func (cs cellStyle) lipglossStyle() lipgloss.Style {
 	return style
 }
 
-func renderRow(term vt10x.View, y, width, cx, cy int) string {
+// renderRow paints a single live-screen row. hlX0/hlX1/hl mark a selection
+// range (see Selection.rowRange) to highlight the same way the cursor cell
+// already is — a selected cell is reverse-video regardless of whether it's
+// also the cursor cell, not double-cancelled.
+func renderRow(term vt10x.View, y, width, cx, cy, hlX0, hlX1 int, hl bool) string {
+	return renderCells(width, func(x int) vt10x.Glyph { return term.Cell(x, y) }, func(x int) bool {
+		return (x == cx && y == cy) || (hl && x >= hlX0 && x < hlX1)
+	})
+}
+
+// renderHistoryRow paints a single scrollback row (from Session.ScrollUp),
+// clamped to whichever is narrower of the requested width or the row's own
+// width — rows captured before a resize may be shorter/longer than the
+// panel's current width. History rows never contain the cursor, only
+// (optionally) a selection highlight.
+func renderHistoryRow(row []vt10x.Glyph, width, hlX0, hlX1 int, hl bool) string {
+	if width > len(row) {
+		width = len(row)
+	}
+	return renderCells(width, func(x int) vt10x.Glyph { return row[x] }, func(x int) bool {
+		return hl && x >= hlX0 && x < hlX1
+	})
+}
+
+// renderCells is renderRow/renderHistoryRow's shared batching logic:
+// consecutive same-styled cells become a single lipgloss.Render call
+// instead of one per character. invertAt marks cells to draw reverse-video
+// — the cursor cell, a selection highlight, or both (still just reverse,
+// not double-cancelled).
+func renderCells(width int, cellAt func(x int) vt10x.Glyph, invertAt func(x int) bool) string {
 	var b strings.Builder
 	var run strings.Builder
 	var runStyle cellStyle
@@ -326,8 +535,8 @@ func renderRow(term vt10x.View, y, width, cx, cy int) string {
 	}
 
 	for x := 0; x < width; x++ {
-		g := term.Cell(x, y)
-		st := glyphCellStyle(g, x == cx && y == cy)
+		g := cellAt(x)
+		st := glyphCellStyle(g, invertAt(x))
 		if !haveRun {
 			runStyle = st
 			haveRun = true

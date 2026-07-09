@@ -60,6 +60,8 @@ func TestKeyToBytesArrowsAndNavigation(t *testing.T) {
 		{tea.KeyDelete, "\x1b[3~"},
 		{tea.KeyInsert, "\x1b[2~"},
 		{tea.KeyShiftTab, "\x1b[Z"},
+		{tea.KeyCtrlRight, "\x1b[1;5C"},
+		{tea.KeyCtrlLeft, "\x1b[1;5D"},
 	}
 	for _, tc := range cases {
 		got := keyToBytes(tea.KeyMsg{Type: tc.typ})

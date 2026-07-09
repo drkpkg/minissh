@@ -86,6 +86,16 @@ type appModel struct {
 	currentSessionIdx int
 	inSessionMode     bool
 
+	// selecting/selAnchor/selHead track an in-progress or just-completed
+	// mouse text selection inside the active embedded session, in
+	// session-local column/row coordinates (see sessionPanelOrigin and
+	// selection.go). selSessionID pins a completed selection to the
+	// session it was made in so switching tabs can't leave a highlight
+	// pointing at the wrong session's grid.
+	selecting          bool
+	selSessionID       string
+	selAnchor, selHead selPoint
+
 	searching   bool
 	searchQuery string
 	searchField searchField
@@ -748,24 +758,32 @@ func (m appModel) closeSessionForHost(hostID string) (tea.Model, tea.Cmd) {
 // updateActiveSession handles the reserved tab-switch/detach combos, then
 // forwards every other key event into the focused session's pty instead of
 // minissh's own navigation — while attached, a session owns all input, the
-// same way overlay/searching states already do. ctrl+←/→ and ctrl+\ are
-// necessarily stolen from the remote session to make this possible, the
+// same way overlay/searching states already do. ctrl+pgup/pgdn and ctrl+\
+// are necessarily stolen from the remote session to make this possible, the
 // same trade-off every terminal multiplexer (tmux, screen) makes by
-// reserving a prefix/combo of its own.
+// reserving a prefix/combo of its own — chosen over ctrl+left/right
+// specifically so that much more common shell word-jump binding still
+// reaches the remote session.
 func (m appModel) updateActiveSession(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if mm, ok := msg.(tea.MouseMsg); ok {
+		return m.updateSessionMouse(mm)
+	}
 	if km, ok := msg.(tea.KeyMsg); ok {
-		// Matched on Type, not km.String(): some terminals send ctrl+arrow
-		// as ESC[1;7C/D (xterm's ctrl+alt modifier code) or urxvt's
-		// ESC[Oc/Od rather than the plain ESC[1;5C/D bubbletea otherwise
-		// expects, which it still parses as KeyCtrlRight/KeyCtrlLeft but
-		// with Alt set — String() would then read "alt+ctrl+right" and
-		// silently miss a plain-string switch, forwarding the escape to
-		// the remote session instead of switching tabs.
+		// A stale selection highlighting the wrong (or now-scrolled) text
+		// is worse than none — any keypress dismisses it, the same
+		// convention real terminals use.
+		m.clearSelection()
+		// Matched on Type, not km.String(): some terminals send
+		// ctrl+pgup/pgdn with the Alt bit set (mirroring the same
+		// ctrl+alt-flagged variant xterm/urxvt send for ctrl+arrow) —
+		// String() would then read "alt+ctrl+pgdown" and silently miss a
+		// plain-string switch, forwarding the escape to the remote session
+		// instead of switching tabs.
 		switch km.Type {
-		case tea.KeyCtrlRight:
+		case tea.KeyCtrlPgDown:
 			m.cycleSession(1)
 			return m, nil
-		case tea.KeyCtrlLeft:
+		case tea.KeyCtrlPgUp:
 			m.cycleSession(-1)
 			return m, nil
 		case tea.KeyCtrlBackslash:
@@ -779,6 +797,29 @@ func (m appModel) updateActiveSession(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// to, and no more input is expected once a session has
 				// frozen on failure; any other key just dismisses it.
 				return m.removeSession(cur.host.ID)
+			}
+			// PgUp/PgDn scroll minissh's own local scrollback, except when
+			// the remote program owns the alt screen (less, vim, top, ...)
+			// — those already page themselves, so the keys fall through to
+			// the normal forwarding path below instead, matching how
+			// iTerm2/kitty/alacritty already draw this line. Any other key
+			// snaps a scrolled-back view to live output first, same
+			// convention real terminals use: typing into a shell you can't
+			// see would otherwise be silently confusing.
+			switch km.Type {
+			case tea.KeyPgUp, tea.KeyPgDown:
+				if !cur.sess.InAltScreen() {
+					if km.Type == tea.KeyPgUp {
+						cur.sess.ScrollUp(m.hostsContentHeight)
+					} else {
+						cur.sess.ScrollDown(m.hostsContentHeight)
+					}
+					return m, nil
+				}
+			default:
+				if cur.sess.ScrollOffset() > 0 {
+					cur.sess.ScrollReset()
+				}
 			}
 			if b := keyToBytes(km); b != nil {
 				_, _ = cur.sess.Write(b)
@@ -1089,15 +1130,16 @@ func (m appModel) mainView() string {
 		// full-screen; "E" is only a pre-connect choice.
 		cur := m.sessions[m.currentSessionIdx]
 		header := panelHeaderStyle(true).Render(fmt.Sprintf("SESSION — %s", cur.host.Label))
+		sel := m.currentSelection()
 		if cur.ended {
 			// One extra line for the banner — must come out of the render
 			// height budget, not be added on top of it (the tab strip made
 			// exactly this mistake once already: an unbudgeted extra line
 			// just gets silently clipped in a terminal that's already full).
 			banner := errorStyle.Render(fmt.Sprintf("Session ended (exit %d) — press any key to close", cur.exitCode))
-			hostsContent = header + "\n" + banner + "\n" + cur.sess.Render(m.hostsWidth, m.hostsContentHeight-1)
+			hostsContent = header + "\n" + banner + "\n" + cur.sess.Render(m.hostsWidth, m.hostsContentHeight-1, sel)
 		} else {
-			hostsContent = header + "\n" + cur.sess.Render(m.hostsWidth, m.hostsContentHeight)
+			hostsContent = header + "\n" + cur.sess.Render(m.hostsWidth, m.hostsContentHeight, sel)
 		}
 	case m.homeView:
 		header := panelHeaderStyle(m.focus == focusHosts).Render("DASHBOARD")
@@ -1194,7 +1236,16 @@ func hintLine(pairs [][2]string) string {
 // ends, instead of quitting every time you connect.
 func Run(hosts []model.Host, groups []model.Group) error {
 	m := newAppModel(hosts, groups)
-	p := tea.NewProgram(m)
+	// WithMouseCellMotion reports motion only while a button is held —
+	// enough for click-drag text selection inside an embedded session (see
+	// selection.go) without the overhead of reporting every hover.
+	// Enabling mouse capture at all is necessarily global — bubbletea has
+	// no per-panel scoping — so outside the session panel, clicks are
+	// simply ignored (nothing else handles mouse input); native
+	// OS/terminal selection there still works via shift+drag, the
+	// standard mouse-capture bypass every major terminal emulator
+	// supports.
+	p := tea.NewProgram(m, tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("running TUI: %w", err)
 	}
