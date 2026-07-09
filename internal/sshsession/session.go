@@ -265,17 +265,30 @@ func (s *Session) Render(width, height int) string {
 // cellStyle is the plain-comparable subset of a glyph's rendering that
 // actually varies cell to cell — used to batch consecutive same-styled
 // cells into a single lipgloss.Render call instead of one per character.
+//
+// Reverse video (both the glyph's own attrReverse and the cursor block) is
+// tracked as a flag rather than by swapping fg/bg up front: FG/BG are
+// frequently vt10x.DefaultFG/DefaultBG, sentinel values meaning "whatever
+// the terminal's ambient default is" rather than a real palette index.
+// Swapping those into each other and handing the sentinel's raw numeric
+// value to lipgloss.Color produced a bogus 256-color index (the sentinels
+// are 1<<24 and 1<<24+1), which most terminals silently fail to render —
+// that's what made the cursor (and any reverse-video default-colored text)
+// invisible. Letting the terminal apply its own reverse-video SGR
+// attribute instead sidesteps the problem entirely, since it inverts
+// whatever the ambient colors actually are.
 type cellStyle struct {
-	fg, bg vt10x.Color
-	bold   bool
+	fg, bg  vt10x.Color
+	bold    bool
+	reverse bool
 }
 
 func glyphCellStyle(g vt10x.Glyph, isCursor bool) cellStyle {
-	fg, bg := g.FG, g.BG
-	if g.Mode&attrReverse != 0 || isCursor {
-		fg, bg = bg, fg
+	reverse := g.Mode&attrReverse != 0
+	if isCursor {
+		reverse = !reverse
 	}
-	return cellStyle{fg: fg, bg: bg, bold: g.Mode&attrBold != 0}
+	return cellStyle{fg: g.FG, bg: g.BG, bold: g.Mode&attrBold != 0, reverse: reverse}
 }
 
 // lipglossStyle maps a vt10x color/attribute combination onto lipgloss.
@@ -291,6 +304,9 @@ func (cs cellStyle) lipglossStyle() lipgloss.Style {
 	}
 	if cs.bold {
 		style = style.Bold(true)
+	}
+	if cs.reverse {
+		style = style.Reverse(true)
 	}
 	return style
 }

@@ -26,16 +26,27 @@ func TestMain(m *testing.M) {
 func TestGlyphCellStyleAppliesReverseVideo(t *testing.T) {
 	g := vt10x.Glyph{FG: 1, BG: 2, Mode: attrReverse}
 	cs := glyphCellStyle(g, false)
-	if cs.fg != 2 || cs.bg != 1 {
-		t.Fatalf("expected fg/bg swapped under reverse video, got fg=%d bg=%d", cs.fg, cs.bg)
+	// fg/bg are left untouched — reverse video is applied by the terminal
+	// via the reverse flag, not by swapping (possibly sentinel) color
+	// values ourselves. See the cellStyle doc comment for why.
+	if cs.fg != 1 || cs.bg != 2 || !cs.reverse {
+		t.Fatalf("expected fg=1 bg=2 reverse=true, got fg=%d bg=%d reverse=%v", cs.fg, cs.bg, cs.reverse)
 	}
 }
 
-func TestGlyphCellStyleCursorAlsoSwapsColors(t *testing.T) {
+func TestGlyphCellStyleCursorAlsoSetsReverse(t *testing.T) {
 	g := vt10x.Glyph{FG: 1, BG: 2}
 	cs := glyphCellStyle(g, true)
-	if cs.fg != 2 || cs.bg != 1 {
-		t.Fatalf("expected fg/bg swapped at the cursor cell, got fg=%d bg=%d", cs.fg, cs.bg)
+	if cs.fg != 1 || cs.bg != 2 || !cs.reverse {
+		t.Fatalf("expected fg=1 bg=2 reverse=true at the cursor cell, got fg=%d bg=%d reverse=%v", cs.fg, cs.bg, cs.reverse)
+	}
+}
+
+func TestGlyphCellStyleCursorOnReverseCellCancelsOut(t *testing.T) {
+	g := vt10x.Glyph{FG: 1, BG: 2, Mode: attrReverse}
+	cs := glyphCellStyle(g, true)
+	if cs.reverse {
+		t.Fatalf("expected cursor on an already-reverse cell to XOR back to non-reverse, got reverse=%v", cs.reverse)
 	}
 }
 
@@ -71,6 +82,27 @@ func TestCellStyleLipglossStyleAppliesExplicitColor(t *testing.T) {
 	rendered := style.Render("x")
 	if !strings.Contains(rendered, "x") {
 		t.Fatalf("expected rendered output to still contain the character, got %q", rendered)
+	}
+}
+
+// TestCellStyleLipglossStyleCursorOnDefaultColorsStaysVisible guards
+// against the actual bug reported in production: the cursor cell over
+// ordinary (default-colored) text rendered as invisible, because the old
+// implementation swapped vt10x.DefaultFG/DefaultBG — sentinels, not real
+// palette indices — into literal lipgloss.Color numbers, producing a
+// bogus 256-color escape sequence most terminals silently drop.
+func TestCellStyleLipglossStyleCursorOnDefaultColorsStaysVisible(t *testing.T) {
+	g := vt10x.Glyph{FG: vt10x.DefaultFG, BG: vt10x.DefaultBG}
+	cs := glyphCellStyle(g, true)
+	style := cs.lipglossStyle()
+	if !style.GetReverse() {
+		t.Fatal("expected the cursor cell to use the terminal's own reverse-video attribute")
+	}
+	if got := style.GetForeground(); got != lipgloss.TerminalColor(lipgloss.NoColor{}) {
+		t.Fatalf("expected no literal foreground override for default-colored cursor cell, got %v", got)
+	}
+	if got := style.GetBackground(); got != lipgloss.TerminalColor(lipgloss.NoColor{}) {
+		t.Fatalf("expected no literal background override for default-colored cursor cell, got %v", got)
 	}
 }
 
