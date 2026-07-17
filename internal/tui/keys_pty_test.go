@@ -7,7 +7,7 @@ import (
 )
 
 func TestKeyToBytesRunes(t *testing.T) {
-	got := keyToBytes(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("abc")})
+	got := keyToBytes(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("abc")}, false)
 	if string(got) != "abc" {
 		t.Fatalf("keyToBytes(runes) = %q, want %q", got, "abc")
 	}
@@ -29,7 +29,7 @@ func TestKeyToBytesControlCharactersUseRawASCIIValue(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := keyToBytes(tea.KeyMsg{Type: tc.typ})
+			got := keyToBytes(tea.KeyMsg{Type: tc.typ}, false)
 			if len(got) != 1 || got[0] != tc.want {
 				t.Fatalf("keyToBytes(%s) = %v, want [%d]", tc.name, got, tc.want)
 			}
@@ -38,7 +38,7 @@ func TestKeyToBytesControlCharactersUseRawASCIIValue(t *testing.T) {
 }
 
 func TestKeyToBytesSpace(t *testing.T) {
-	got := keyToBytes(tea.KeyMsg{Type: tea.KeySpace})
+	got := keyToBytes(tea.KeyMsg{Type: tea.KeySpace}, false)
 	if string(got) != " " {
 		t.Fatalf("keyToBytes(space) = %q, want %q", got, " ")
 	}
@@ -64,9 +64,36 @@ func TestKeyToBytesArrowsAndNavigation(t *testing.T) {
 		{tea.KeyCtrlLeft, "\x1b[1;5D"},
 	}
 	for _, tc := range cases {
-		got := keyToBytes(tea.KeyMsg{Type: tc.typ})
+		got := keyToBytes(tea.KeyMsg{Type: tc.typ}, false)
 		if string(got) != tc.want {
 			t.Fatalf("keyToBytes(%v) = %q, want %q", tc.typ, got, tc.want)
+		}
+	}
+}
+
+// With DECCKM (application cursor keys) on — the mode htop/vim/less set on
+// startup — arrows and home/end must switch to the SS3 prefix; everything
+// else stays as-is.
+func TestKeyToBytesAppCursorModeUsesSS3(t *testing.T) {
+	cases := []struct {
+		typ  tea.KeyType
+		want string
+	}{
+		{tea.KeyUp, "\x1bOA"},
+		{tea.KeyDown, "\x1bOB"},
+		{tea.KeyRight, "\x1bOC"},
+		{tea.KeyLeft, "\x1bOD"},
+		{tea.KeyHome, "\x1bOH"},
+		{tea.KeyEnd, "\x1bOF"},
+		// Unaffected by DECCKM: still CSI.
+		{tea.KeyPgUp, "\x1b[5~"},
+		{tea.KeyDelete, "\x1b[3~"},
+		{tea.KeyCtrlRight, "\x1b[1;5C"},
+	}
+	for _, tc := range cases {
+		got := keyToBytes(tea.KeyMsg{Type: tc.typ}, true)
+		if string(got) != tc.want {
+			t.Fatalf("keyToBytes(%v, appCursor) = %q, want %q", tc.typ, got, tc.want)
 		}
 	}
 }
@@ -82,7 +109,7 @@ func TestKeyToBytesFunctionKeys(t *testing.T) {
 		{tea.KeyF12, "\x1b[24~"},
 	}
 	for _, tc := range cases {
-		got := keyToBytes(tea.KeyMsg{Type: tc.typ})
+		got := keyToBytes(tea.KeyMsg{Type: tc.typ}, false)
 		if string(got) != tc.want {
 			t.Fatalf("keyToBytes(%v) = %q, want %q", tc.typ, got, tc.want)
 		}
@@ -92,7 +119,7 @@ func TestKeyToBytesFunctionKeys(t *testing.T) {
 func TestKeyToBytesUnrecognizedExtendedKeyIsDropped(t *testing.T) {
 	// KeyF20 is a real, large negative KeyType with no case in the
 	// switch/default range check — must not panic or fabricate bytes.
-	got := keyToBytes(tea.KeyMsg{Type: tea.KeyF20})
+	got := keyToBytes(tea.KeyMsg{Type: tea.KeyF20}, false)
 	if got != nil {
 		t.Fatalf("expected nil for an unmapped extended key, got %v", got)
 	}

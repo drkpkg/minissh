@@ -209,6 +209,18 @@ func (s *Session) InAltScreen() bool {
 	return s.term.Mode()&vt10x.ModeAltScreen != 0
 }
 
+// InAppCursorMode reports whether the remote program has enabled DECCKM
+// (application cursor keys) — ncurses apps (htop, less, vim, ...) do this
+// via smkx on startup and then expect arrows/home/end as SS3 sequences
+// (ESC O A ...) instead of the normal CSI form (ESC [ A ...). Sending the
+// CSI form while this mode is on is the classic reason arrow keys
+// "don't work" inside full-screen apps in an embedded terminal.
+func (s *Session) InAppCursorMode() bool {
+	s.term.Lock()
+	defer s.term.Unlock()
+	return s.term.Mode()&vt10x.ModeAppCursor != 0
+}
+
 func clampU16(v int) uint16 {
 	if v < 0 {
 		return 0

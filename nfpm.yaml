@@ -1,0 +1,37 @@
+# nfpm packaging config (https://nfpm.goreleaser.com).
+# Used by the release workflow to produce .deb (Debian/Ubuntu) and
+# .pkg.tar.zst (Arch Linux) packages from the cross-compiled binaries.
+#
+# Expects these environment variables:
+#   VERSION - release version (e.g. v1.2.3; nfpm strips the leading v)
+#   GOARCH  - target architecture: amd64, arm64, or arm7
+# and the binary for the target architecture copied to dist/pkg-staging/minissh.
+
+name: minissh
+arch: ${GOARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: Felix Daniel Coca Calvimontes <daniel.uremix@gmail.com>
+vendor: drkpkg
+homepage: https://github.com/drkpkg/minissh
+description: |
+  A keyboard-first SSH host manager for the terminal.
+  Three-panel dashboard (groups / hosts / details) with inline SSH sessions,
+  fuzzy search, reachability polling, and a scriptable CLI. Shells out to the
+  system ssh client, so ssh_config, agents, and known_hosts all just work.
+
+contents:
+  - src: dist/pkg-staging/minissh
+    dst: /usr/bin/minissh
+
+overrides:
+  deb:
+    depends:
+      - openssh-client
+    recommends:
+      - sshpass
+  archlinux:
+    depends:
+      - openssh

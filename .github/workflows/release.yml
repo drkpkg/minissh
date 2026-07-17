@@ -34,6 +34,7 @@ jobs:
           platforms=(
             "linux/amd64"
             "linux/arm64"
+            "linux/arm"
             "darwin/amd64"
             "darwin/arm64"
             "windows/amd64"
@@ -43,8 +44,17 @@ jobs:
           for platform in "${platforms[@]}"; do
             GOOS="${platform%/*}"
             GOARCH="${platform#*/}"
+            GOARM=""
             BINARY="minissh"
-            ARCHIVE="minissh_${VERSION}_${GOOS}_${GOARCH}"
+            ARCH_LABEL="$GOARCH"
+
+            # 32-bit ARM targets ARMv7 (e.g. Raspberry Pi 2+ running a 32-bit OS).
+            if [ "$GOARCH" = "arm" ]; then
+              GOARM="7"
+              ARCH_LABEL="armv7"
+            fi
+
+            ARCHIVE="minissh_${VERSION}_${GOOS}_${ARCH_LABEL}"
             STAGING="dist/${ARCHIVE}"
 
             if [ "$GOOS" = "windows" ]; then
@@ -52,7 +62,7 @@ jobs:
             fi
 
             mkdir -p "$STAGING"
-            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build \
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" GOARM="$GOARM" go build \
               -ldflags="-s -w -X main.version=${VERSION}" \
               -o "${STAGING}/${BINARY}" \
               ./cmd/minissh
@@ -64,10 +74,36 @@ jobs:
             fi
           done
 
+      - name: Build Debian/Ubuntu and Arch Linux packages
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+          # nfpm arch values: amd64 -> deb amd64 / pacman x86_64,
+          # arm64 -> deb arm64 / pacman aarch64, arm7 -> deb armhf / pacman armv7h.
+          declare -A binaries=(
+            ["amd64"]="dist/minissh_${VERSION}_linux_amd64/minissh"
+            ["arm64"]="dist/minissh_${VERSION}_linux_arm64/minissh"
+            ["arm7"]="dist/minissh_${VERSION}_linux_armv7/minissh"
+          )
+
+          mkdir -p dist/pkg-staging
+          for arch in "${!binaries[@]}"; do
+            cp -f "${binaries[$arch]}" dist/pkg-staging/minissh
+            for pkg in deb archlinux; do
+              GOARCH="$arch" nfpm package --config nfpm.yaml --packager "$pkg" --target dist/
+            done
+          done
+          rm -rf dist/pkg-staging
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.deb
+            dist/*.pkg.tar.zst
           generate_release_notes: true

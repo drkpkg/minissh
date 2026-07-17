@@ -6,6 +6,12 @@ import tea "github.com/charmbracelet/bubbletea"
 // terminal would send for it, for forwarding into an embedded SSH
 // session's pty.
 //
+// appCursor is the session's DECCKM ("application cursor keys") state —
+// full-screen ncurses apps (htop, vim, less, ...) enable it on startup
+// and then expect arrows/home/end as SS3 sequences (ESC O A) instead of
+// the normal CSI form (ESC [ A); their terminfo only maps the SS3 form,
+// so sending CSI while the mode is on makes arrow keys dead inside them.
+//
 // Runes and most control characters need no lookup table at all: bubble
 // tea's KeyType constants for them are literally the ASCII control-code
 // value (KeyEnter==13, KeyTab==9, KeyEsc==27, KeyCtrlC==3, ...) — see
@@ -13,28 +19,36 @@ import tea "github.com/charmbracelet/bubbletea"
 // Only the handful of keys with no natural single-byte representation
 // (arrows, home/end, page up/down, function keys) need explicit
 // xterm/VT100 escape sequences.
-func keyToBytes(km tea.KeyMsg) []byte {
+func keyToBytes(km tea.KeyMsg, appCursor bool) []byte {
+	// SS3 ("\x1bO") vs CSI ("\x1b[") prefix for the cursor keys, per
+	// DECCKM — the same switch xterm and every other emulator makes.
+	cursor := func(final byte) []byte {
+		if appCursor {
+			return []byte{0x1b, 'O', final}
+		}
+		return []byte{0x1b, '[', final}
+	}
 	switch km.Type {
 	case tea.KeyRunes:
 		return []byte(string(km.Runes))
 	case tea.KeySpace:
 		return []byte(" ")
 	case tea.KeyUp:
-		return []byte("\x1b[A")
+		return cursor('A')
 	case tea.KeyDown:
-		return []byte("\x1b[B")
+		return cursor('B')
 	case tea.KeyRight:
-		return []byte("\x1b[C")
+		return cursor('C')
 	case tea.KeyLeft:
-		return []byte("\x1b[D")
+		return cursor('D')
 	case tea.KeyCtrlRight:
 		return []byte("\x1b[1;5C")
 	case tea.KeyCtrlLeft:
 		return []byte("\x1b[1;5D")
 	case tea.KeyHome:
-		return []byte("\x1b[H")
+		return cursor('H')
 	case tea.KeyEnd:
-		return []byte("\x1b[F")
+		return cursor('F')
 	case tea.KeyPgUp:
 		return []byte("\x1b[5~")
 	case tea.KeyPgDown:

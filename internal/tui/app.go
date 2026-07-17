@@ -85,6 +85,11 @@ type appModel struct {
 	sessions          []liveSession
 	currentSessionIdx int
 	inSessionMode     bool
+	// redrawTicking is true while a sessionRedrawTick chain is alive. The
+	// chain dies when a tick arrives with inSessionMode false (detached),
+	// so re-attaching must start a new one — and only one, no matter how
+	// many sessions are open or how the attach happened.
+	redrawTicking bool
 
 	// selecting/selAnchor/selHead track an in-progress or just-completed
 	// mouse text selection inside the active embedded session, in
@@ -182,7 +187,11 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSessionEnded(tm.hostID)
 	case sessionRedrawMsg:
 		if !m.inSessionMode {
-			return m, nil // detached, or no sessions left; drop the stale tick rather than reschedule forever
+			// Detached, or no sessions left; drop the stale tick rather
+			// than reschedule forever. Re-attaching starts a fresh chain
+			// (see startEmbeddedSession).
+			m.redrawTicking = false
+			return m, nil
 		}
 		return m, sessionRedrawTick()
 	}
@@ -698,7 +707,14 @@ func (m appModel) startEmbeddedSession(h model.Host) (tea.Model, tea.Cmd) {
 		m.currentSessionIdx = i
 		m.inSessionMode = true
 		m.applySizes() // in case the panel resized while this session was backgrounded
-		return m, nil
+		// The redraw chain died when this session was detached — without a
+		// new one the screen only repaints on keypresses, which reads as
+		// the session being extremely slow.
+		if m.redrawTicking {
+			return m, nil
+		}
+		m.redrawTicking = true
+		return m, sessionRedrawTick()
 	}
 
 	sess, err := sshsession.Start(h, m.hostsWidth, m.hostsContentHeight)
@@ -720,7 +736,12 @@ func (m appModel) startEmbeddedSession(h model.Host) (tea.Model, tea.Cmd) {
 	// budget that accounts for it, not the stale one Start was called with.
 	m.applySizes()
 	m.hosts.SetLiveSessions(m.liveSessionHostIDs())
-	return m, tea.Batch(waitSessionDone(h.ID, sess), sessionRedrawTick())
+	cmds := []tea.Cmd{waitSessionDone(h.ID, sess)}
+	if !m.redrawTicking {
+		m.redrawTicking = true
+		cmds = append(cmds, sessionRedrawTick())
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // cycleSession moves currentSessionIdx by delta (±1, wrapping) and resizes
@@ -821,7 +842,7 @@ func (m appModel) updateActiveSession(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cur.sess.ScrollReset()
 				}
 			}
-			if b := keyToBytes(km); b != nil {
+			if b := keyToBytes(km, cur.sess.InAppCursorMode()); b != nil {
 				_, _ = cur.sess.Write(b)
 			}
 		}

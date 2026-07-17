@@ -1,0 +1,25 @@
+# Maintainer: Felix Daniel Coca Calvimontes <daniel.uremix@gmail.com>
+pkgname=minissh
+pkgver=0.1.6
+pkgrel=1
+pkgdesc="A keyboard-first SSH host manager for the terminal"
+arch=('x86_64' 'aarch64' 'armv7h')
+url="https://github.com/drkpkg/minissh"
+license=('custom')
+depends=('openssh')
+optdepends=('sshpass: non-interactive password authentication from the keychain')
+makedepends=('go')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('3f9f45f573ac5d277420a6b68bc01169b395478835a28357b8997a5a3a159b35')
+
+build() {
+  cd "$pkgname-$pkgver"
+  export CGO_ENABLED=0
+  export GOFLAGS="-trimpath -mod=readonly -modcacherw"
+  go build -ldflags "-s -w -X main.version=v$pkgver" -o minissh ./cmd/minissh
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 minissh "$pkgdir/usr/bin/minissh"
+}
