@@ -1,35 +1,11 @@
 # minissh
 
-A fast, keyboard-first SSH host manager for the terminal — a three-panel
-dashboard (groups / hosts / details) in the style of
-[LazyGit](https://github.com/jesseduffield/lazygit),
-[k9s](https://github.com/derailed/k9s), [GitUI](https://github.com/extrawurst/gitui),
-and [btop](https://github.com/aristocratos/btop).
+A fast, keyboard-first SSH host manager for the terminal.
+
+<img width="2376" height="1289" alt="image" src="https://github.com/user-attachments/assets/0a9b3d0c-d270-4761-8f21-e7a76b413254" />
+
 
 ![CI](https://github.com/drkpkg/minissh/actions/workflows/ci.yml/badge.svg)
-
-## Features
-
-- **Three-panel dashboard** — collapsible group tree, sortable host table, live
-  details panel, all on screen at once.
-- **Single-key navigation** — `h`/`l`/`tab` between panels, `j`/`k` to move,
-  `enter` to connect, no nested menus for common actions.
-- **Sessions render inline.** Pressing `enter` opens a real terminal emulator
-  (pty + VT100 parser) embedded in the host panel — minissh stays open across
-  SSH sessions instead of quitting every time you connect. A full-screen
-  fallback (`E`) is always available too.
-- **Live fuzzy search** across hostname, address, user, tags, and group.
-- **Favorites, last-connected tracking, and per-host notes.**
-- **Live reachability polling** — online/offline badges from background TCP
-  probes of whatever's currently visible, not your whole inventory.
-- **Agent, SSH key, or password authentication.** Passwords and key
-  passphrases are stored in your OS keychain — never written to disk in
-  plaintext.
-- **Import hosts** from a CSV file, a JSON file, an `ssh_config` file, or by
-  decrypting a local Termius installation's vault directly (useful for a
-  one-time migration).
-- **Everything is also a scriptable CLI subcommand** — add, edit, remove,
-  list, import, and connect to hosts without opening the TUI.
 
 ## Installation
 
@@ -78,12 +54,6 @@ existing `~/.ssh/config`, agent, and known_hosts all just work.
 minissh                       # launch the dashboard
 ```
 
-On first run, with no hosts yet, you'll see an onboarding screen. Press `a`
-to add a host manually, or `i` to import from a file or a local Termius
-install. Once you have hosts, `enter` on the selected one connects — the
-session renders right there in the host panel, and you're back at the
-dashboard the moment it ends.
-
 ## Keybindings
 
 | Key | Action |
@@ -101,9 +71,6 @@ dashboard the moment it ends.
 | `/` | Live fuzzy search (`tab` cycles which field it matches) |
 | `q` / `ctrl+c` | Quit |
 
-The status bar at the bottom always shows the keys relevant to whatever
-panel currently has focus.
-
 ## CLI reference
 
 | Command | Description |
@@ -117,14 +84,6 @@ panel currently has focus.
 | `minissh import <file> [--format csv\|json\|sshconfig] [--include-secrets]` | Import hosts from a file |
 | `minissh import-termius` | Decrypt and import hosts from a local Termius installation |
 | `minissh --version` | Print the build version |
-
-## Data storage
-
-- Hosts and groups: `$XDG_CONFIG_HOME/minissh/hosts.json` (`~/.config/minissh/hosts.json` on Linux)
-- Imported/decrypted private keys: `$XDG_CONFIG_HOME/minissh/keys/` (written `0600`, directory `0700`)
-- Passwords and key passphrases: your OS keychain (Secret Service/GNOME
-  Keyring on Linux, Keychain on macOS, Credential Manager on Windows) — never
-  in `hosts.json`
 
 ## Building from source
 
